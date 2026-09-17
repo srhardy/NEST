@@ -157,7 +157,7 @@ pub(crate) fn toml_string(value: &str) -> String {
             '\n' => escaped.push_str("\\n"),
             '\u{000C}' => escaped.push_str("\\f"),
             '\r' => escaped.push_str("\\r"),
-            c if (c as u32) < 0x20 || c == '\u{007F}' => {
+            c if (c as u32) < 0x20 || ('\u{007F}'..='\u{009F}').contains(&c) => {
                 escaped.push_str(&format!("\\u{:04X}", c as u32));
             }
             c => escaped.push(c),
@@ -174,3 +174,38 @@ pub const TELEMETRY_ENV: &[(&str, &str)] = &[
     ("SCARF_NO_ANALYTICS", "1"),
     ("RTK_TELEMETRY_DISABLED", "1"),
 ];
+
+#[cfg(test)]
+mod toml_string_tests {
+    use super::toml_string;
+
+    #[test]
+    fn escapes_quotes_backslashes_and_named_controls() {
+        assert_eq!(toml_string("a\\b\"c\nd\te"), "\"a\\\\b\\\"c\\nd\\te\"");
+        assert_eq!(toml_string("\u{8}\u{c}\r"), "\"\\b\\f\\r\"");
+    }
+
+    #[test]
+    fn c0_c1_and_del_escape_as_unicode() {
+        for c in (0u32..0x20).chain(0x7F..=0x9F) {
+            let ch = char::from_u32(c).unwrap();
+            let out = toml_string(&format!("x{ch}y"));
+            match ch {
+                '\u{8}' | '\t' | '\n' | '\u{C}' | '\r' => continue, // short escapes
+                _ => assert!(
+                    out.contains(&format!("\\u{c:04X}")),
+                    "U+{c:04X} not escaped in {out:?}"
+                ),
+            }
+        }
+        // and no raw control char survives anywhere
+        let nasty: String = (0u32..=0x9F).filter_map(char::from_u32).collect();
+        let out = toml_string(&nasty);
+        assert!(!out.chars().any(|c| (c as u32) < 0x20 || (0x7F..=0x9F).contains(&(c as u32))));
+    }
+
+    #[test]
+    fn ordinary_text_passes_through() {
+        assert_eq!(toml_string("hello world — Üñí"), "\"hello world — Üñí\"");
+    }
+}
