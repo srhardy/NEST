@@ -103,6 +103,27 @@ but the default is the guided path."*
 - **"+ bot" always opens eggbot** — never a raw form. Expert mode
   additionally offers "new bot from manifest."
 
+### The Phase-2 brief (Steven's GUI direction)
+
+- **Three dark themes on black**, user-switchable, OS-following by default
+  with an in-app override: **fluro** (neon text), **mono** (white→grey),
+  **multi** (each bot owns a colour). All imagery is crisp white animated
+  characters; notifications/popups/speech bubbles follow the same theme.
+- **Minimized forms:** taskbar icon + tooltip, themed notification
+  bubbles, or a floating "nested birdy" mascot on the desktop — user picks,
+  respects OS theme unless overridden. (Native chrome — lands with the
+  Tauri wrapper; the web shell can't own the taskbar.)
+- **Bigbird is the boss's default name** — onboarding lets the user rename
+  agents, roles, and abilities; it's the BOB concept given a nest identity.
+- **Engine picker at onboarding:** Claude Code / Codex / OpenCode / Pi
+  cards with **1-click install**; auto API-key generation + storage;
+  **free-first router** (free tier → cheapest paid) as the default power
+  source — the free-llm router ships as a selectable Spoke plugin.
+- **Everything remote is a Spoke plugin:** telegram, slack, smart-watch —
+  1-click add under the Spoke idea; no bespoke integrations.
+- **Backend settings are an editable `.md`** — the GUI edits it for you,
+  but the file stays human-readable and hand-editable.
+
 ### Where each reference product contributes
 
 | From | We take | We deliberately skip |
@@ -163,7 +184,8 @@ Why this layering wins:
 | `[[bots]]`/`[[automations]]` + boss/permissions/routing/services schema | ✅ **PR #2 + PR #3** (awaiting merge) |
 | `bob-council` starter package (8 agents + 6 skills) | ✅ **PR #3** |
 | Engine spine (nest/ — perches, peeps, roost, brood, forage) | ✅ **PR #4** |
-| The Shell (Phase 2 — one-window noob app) | 🔲 next step |
+| The Shell v1 (Phase 2 — one-window app: roster, tabs, watch-it-think, 3 themes, settings.md) | ✅ **PR #5** |
+| Desktop chrome (taskbar, desktop birdy, 1-click installs, eggbot interview) | 🔲 next step |
 | Access to the private app repo | 🔲 **needs Steven** (see §9) — only for debloat Track B |
 
 ---

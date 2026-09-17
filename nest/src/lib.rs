@@ -26,4 +26,5 @@ pub mod home;
 pub mod peep;
 pub mod perch;
 pub mod roost;
+pub mod shell;
 pub mod spec;

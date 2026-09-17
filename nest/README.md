@@ -29,6 +29,26 @@ Everything Spoke projects, the engine consumes:
 - `.nest/mcp.json` → harnesses that read it natively get it for free, since
   hatchlings run in the project directory
 
+## The shell — `nest shell`
+
+`nest shell` starts a tiny local server on `http://127.0.0.1:4747`
+(`--port` to change) — the one-window app over this same engine:
+
+- **Roster** — every bot as an animated bird (idle / working / waiting /
+  stuck / done); each bot owns a colour in the `multi` theme.
+- **Ask the nest** — chat driving `brood` dispatch; clicking a roster bot
+  chats it directly via `hatch`. Peeps stream live over SSE as loop
+  chips — the watch-it-think view.
+- **Activity** — the roost's receipts.
+- **Settings** — detected perches, power-policy toggles, and the real
+  `<home>/settings.md`, editable in place.
+- **Themes** — `multi` / `fluro` / `mono`; all dark with white animated
+  birds, and toasts/speech bubbles follow the theme too.
+
+Native chrome (taskbar icon, floating desktop birdy, OS notifications,
+1-click engine installs) arrives with the desktop wrapper — the web shell
+embeds unchanged inside it.
+
 ## The `nest` CLI (Expert-mode passthrough)
 
 ```bash
