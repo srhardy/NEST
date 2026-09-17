@@ -58,6 +58,12 @@ enum Cmd {
     Imprint { bot: String, task: Vec<String> },
     /// Direct provider call (the forage layer, echo stub for now).
     Ask { prompt: Vec<String> },
+    /// Open the shell — the one-window app over the engine.
+    Shell {
+        /// Port to listen on (default 4747).
+        #[arg(long, default_value = "4747")]
+        port: u16,
+    },
 }
 
 fn peep_line(bot: &str, peep: &Peep) -> Option<String> {
@@ -221,6 +227,10 @@ fn main() -> Result<()> {
             };
             let res = EchoForage.complete(&req)?;
             println!("{} [{}]", res.text, res.provider);
+        }
+        Cmd::Shell { port } => {
+            let (dirs, cwd) = resolve(&cli)?;
+            nest::shell::serve(dirs, cwd, *port)?;
         }
     }
     Ok(())
