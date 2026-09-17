@@ -289,9 +289,11 @@ fn doctor(home: &Path, project: &Path) -> Result<()> {
     if let Some(manifest) = &manifest {
         println!("  budget preset: {}", manifest.budget.preset);
         println!(
-            "  bots declared: {}   automations declared: {}",
+            "  bots declared: {}   automations declared: {}   routes: {}   services: {}",
             manifest.bots.len(),
-            manifest.automations.len()
+            manifest.automations.len(),
+            manifest.routing.len(),
+            manifest.services.len()
         );
     }
     let lock = Lock::load(project)?;
@@ -744,6 +746,10 @@ fn bot_add(project: &Path, name: &str, job: &str, title: Option<&str>) -> Result
         mcp: Vec::new(),
         model: None,
         memory: Vec::new(),
+        mode: None,
+        permissions: Default::default(),
+        boss: false,
+        max_steps: None,
     };
     candidate.validate()?;
 

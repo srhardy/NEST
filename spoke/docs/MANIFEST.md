@@ -47,6 +47,25 @@ skills = ["bot-authoring"]        # skill names — warns if undeclared
 mcp = ["spoke-fetch"]            # [[mcp]] names — warns if undeclared
 model = "balanced"               # concise | balanced | full (hint)
 memory = ["Templates live in the catalog"]
+mode = "primary"                 # primary | subagent — subagents spool on demand
+boss = true                      # at most one — the orchestrator/default receiver
+max_steps = 30                   # per-run step budget
+permissions = { bash = "ask", edit = "ask", read = "allow" }   # allow | ask | deny per tool
+
+# Routing — the Boss's dispatch table: patterns -> bot + escalation ladder.
+# Nest renders it to .nest/routing.toml (fully Spoke-owned).
+[[routing]]
+patterns = ["debug", "fix bug", "stack trace", "crash"]
+bot = "debugger"                 # [[bots]] name — warns if undeclared
+fallback = ["llm-council"]       # escalation chain — each warns if undeclared
+
+# Services — declared daemons (memory, crawlers…). Nest renders them to
+# .nest/services.toml so the app can start and health-check them.
+[[services]]
+name = "openmemory"
+port = 8765
+health = "/api/v1/stats/"
+start = "docker compose -f ~/mem0/openmemory up -d"
 
 # Automations — trigger-driven runs. Exactly one of `schedule` or `event`.
 # Nest renders them into .nest/automations.toml (fully Spoke-owned).
@@ -81,6 +100,17 @@ enabled = true
 | `automations[].prompt` | string | yes-ish | `""` | What the run does |
 | `automations[].bot` | string | no | — | `[[bots]]` name to run as; dangling ref warns |
 | `automations[].enabled` | bool | no | `true` | Rendered into the file; the runner honours it |
+| `bots[].mode` | `primary`/`subagent` | no | — | Lifecycle: subagents spool as delegated subtasks and auto-clean |
+| `bots[].boss` | bool | no | `false` | The orchestrator — default receiver for un-routed intents; max one |
+| `bots[].max_steps` | int | no | — | Per-run step budget |
+| `bots[].permissions` | map tool→`allow`/`ask`/`deny` | no | `{}` | Per-tool policy rendered into the agent frontmatter |
+| `routing[]` | table[] | no | `[]` | Nest: rendered to `.nest/routing.toml` |
+| `routing[].patterns` | string[] | yes | — | Keywords/patterns that trigger the route |
+| `routing[].bot` | string | yes | — | Target `[[bots]]` name; dangling ref warns |
+| `routing[].fallback` | string[] | no | `[]` | Escalation ladder tried in order on failure |
+| `services[]` | table[] | no | `[]` | Nest: rendered to `.nest/services.toml` |
+| `services[].name` | string | yes | — | Unique across services |
+| `services[].port` / `health` / `start` | int / string / string | no | — | Listen port, health-check path, start command |
 
 **Validation rules**
 
@@ -93,6 +123,10 @@ enabled = true
 | `automations[].schedule` XOR `event` | `automation 'x' must set exactly one of schedule (cron) or event` |
 | `automations[].schedule` 5 fields | `automation 'x' schedule 'y' is not a 5-field cron expression` |
 | `automations[].name` unique | `duplicate automation name 'x'` |
+| at most one `boss = true` | `at most one bot may be marked 'boss = true'` |
+| `routing[].patterns` non-empty | `route for bot 'x' has no patterns — add at least one` |
+| `routing[].bot` / `fallback` names | dangling refs **warn**, never drop |
+| `services[].name` non-empty + unique | `service has an empty name` / `duplicate service name 'x'` |
 | Unknown harness id | reported during sync, skipped |
 | Unknown top-level keys | ignored (forward compatible) |
 
