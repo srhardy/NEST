@@ -9,7 +9,7 @@ Built on top of **[Spoke](https://github.com/srhardy/spoke)** — the config/pac
 ## Why NEST is awesome
 
 ### You don't need to know anything to start
-Open NEST and **eggbot** walks you through building your first bot with four questions — name, job, personality, what it can touch — then shows you exactly what it will create before a single file is written. Preview cards everywhere: nothing happens without you seeing it first.
+Open NEST and **eggbot** walks you through building your first bot with four questions — name, job, personality, what it can touch — then shows you exactly what it will write before a single file is saved.
 
 ### Bots are characters, not config files
 Your roster is a living cast of animated birds on a black canvas — each bot gets its own color, flaps while it works, and tells you when it succeeds or fails. A **watch-it-think** stream shows what your bot is doing as it does it. Dark mode with three themes: fluro, monochrome, and full-color cast.
@@ -18,13 +18,13 @@ Your roster is a living cast of animated birds on a black canvas — each bot ge
 Name your own boss agent (default: **Bigbird**) during onboarding. The Boss watches the roost, routes tasks to the right specialist by pattern, and climbs an escalation ladder when a bot fails — assistant to you, boss to the other assistants. Rename it, reshape it, it's yours.
 
 ### Free-first, always
-NEST routes tasks through the cheapest model that can do the job — free tiers first, with per-provider rate limits respected automatically (try_reserve before dispatch, never a surprise bill). When a provider hits its cap, the next one picks up. You can always override; you can never be ambushed.
+NEST ranks your configured providers by cost tier — free first, then cheap, then paid — and respects each one's rate limits automatically (reserved before dispatch, never a surprise bill). When a provider hits its cap, the next tier picks up. You can always override; you can never be ambushed.
 
 ### Bots that learn
-When a bot finishes a hard task, `nest feather` distills the run into a reusable skill file — provenance stamped with which bot authored it — and installs it back into the nest. The next run starts smarter. The roster literally improves with use.
+When a bot finishes a hard task, `nest feather` distills the run into a reusable skill file — provenance stamped with which bot authored it. Add it to any bot's `skills:` list and its next run starts smarter. The roster literally improves with use.
 
 ### Everything is a one-click Spoke package
-Remotes (Telegram, Slack, smart watch), provider integrations, council packs, starter bots — every capability arrives as a Spoke package installed with one click. Add it upstream later; users never manage plumbing.
+Remotes (Telegram, Slack, smart watch), provider integrations, council packs, starter bots — every capability arrives as a Spoke package, installed with a single `spoke add`. Add it upstream later; users never manage plumbing.
 
 ### It disappears when you don't need it
 Minimize to the taskbar and NEST keeps working quietly — themed notification bubbles when a bot finishes, or an animated desktop **birdy** that flaps while your bots work and opens the app when you poke it. Follows your OS theme unless you tell it otherwise.
