@@ -59,7 +59,8 @@ Everything Spoke projects, the engine consumes:
   `nest ask --provider x`).
 - **Routines** — `automations.toml` schedules (5-field cron, UTC) and
   `file-change:` watches run as ordinary dispatches via the patrol;
-  armed triggers are listed under settings.
+  `POST /api/duties/<name>/fire` fires one now (the settings button
+  and external webhooks share it); armed triggers list under settings.
 - **Remotes** — the shell watches `~/.nest/remotes/<name>/inbox/*.md`:
   each file is brood-dispatched and the reply written to
   `outbox/<chat|channel>.txt`. The `remotes` package ships stdlib-only

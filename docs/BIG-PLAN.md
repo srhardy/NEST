@@ -193,7 +193,8 @@ Why this layering wins:
 | The patrol — `[[automation]]` routines (cron UTC + file-change) run as real dispatches | ✅ **PR #7** |
 | Desktop chrome (taskbar, desktop birdy, OS notifications) | ✅ `devin/desktop` — Tauri wrapper: tray bird menu, close-to-background, draggable/clickable birdy, receipt notifications |
 | Starter bots pack (oncall, pr-reviewer, wiki-keeper, council) + link/file import (`spoke add <url|file|dir>`) | ✅ `devin/starter-pack` — Phase 3 |
-| Provider layer 4a: `openai` kind (any OpenAI-compat endpoint via curl) + limit windows (`~/.nest/usage/`, exhausted providers sit out) + commented seed providers.toml | ✅ `devin/forage-windows` |
+| Provider layer 4a: `openai` kind (any OpenAI-compat endpoint via curl) + limit windows (`~/.nest/usage/`, exhausted providers sit out) + commented seed providers.toml | ✅ **PR #11** (merged) |
+| Routine webhook: `POST /api/duties/<name>/fire` + settings fire button (Phase 4 complete) | ✅ `devin/routine-fire` |
 | Access to the private app repo | 🔲 **needs Steven** (see §9) — only for debloat Track B |
 
 ---
@@ -390,7 +391,7 @@ learning loop: bot → SKILL.md → `spoke add` self-install → provenance in
 | **2a — eggbot in the shell** | the walkthrough: 4-question interview → `spoke diff` preview card → build → test-drive → hand-off to roster; rubric skill enforcing the one-job bar | phase 1 + 2 | 1 session after access |
 | **2b — Engine spine (thin)** ✅ **PR #4** | **`nest/` crate shipped**: perches wrap installed agent CLIs (claude-code, codex + echo/fail stubs; launch, stream `peep` lifecycle events, collect receipts in the roost, no control plane) + `forage` provider layer (echo stub + any local CLI). `nest` CLI: `perches/agents/hatch/brood/roost/imprint/ask` — the Expert-mode passthrough | repo connected | done |
 | **3 — Sharing** ✅ | **shipped**: `packages/starter-bots` (oncall / pr-reviewer / wiki-keeper / council — the second-opinion capability, `mode: subagent` with tailored permission maps); link/file import — `spoke add <https?://url \| file://path \| bare .md>` curl-fetches and wraps lone .md as a one-agent package | phase 1 | done |
-| **4 — Routines** | scheduler + webhooks in-app; `[[automations]]`→`.nest/cron` once format verified; quiet reporting + receipts | phase 2; cron format | 1–2 sessions |
+| **4 — Routines** ✅ | **shipped**: patrol (5-field cron UTC + `file-change:` watches) fires real dispatches with receipts; `POST /api/duties/<name>/fire` is the in-app webhook — settings "fire" button + external triggers share one dispatch path | phase 2 | done |
 | **4a — Provider layer (zero-cost)** ✅ | **shipped**: `openai` kind — any OpenAI-compatible endpoint (`base_url`+`model`+`api_key_env`, curl-transported, freellmapi/codex-router patterns plug in declaratively) + **CodexBar-style limit windows** (`limit`/`window` per provider → `~/.nest/usage/` counters; spent providers sit out until reset, shown on settings tab + `nest providers`) + first-run commented `providers.toml` seed | phase 2b | done |
 | **5 — Cloud tier (optional)** | headless `nest-agent` binary; hosted registry; external triggers | phase 3 + backend | 2–3 sessions |
 | **6 — Self-improving bots (the differentiator)** | **hermes-agent's learning loop**: bots author their own skills — Spoke packages written by bots (a bot finishes a hard task → extracts a reusable `SKILL.md` → `spoke add` self-installs → `agent.lock` records provenance "authored-by: <bot>"). The roster literally gets smarter with use | phase 3 + 4 | 1–2 sessions |

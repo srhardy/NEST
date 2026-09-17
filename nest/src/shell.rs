@@ -187,6 +187,16 @@ impl Shell {
         }
     }
 
+    /// One dispatch path for routines: the patrol's timer and the
+    /// `/api/duties/<name>/fire` webhook both land here.
+    fn fire_duty(&self, d: &patrol::Duty) {
+        let prompt = format!("[routine '{}'] {}", d.spec.name, d.spec.prompt);
+        let _ = match &d.spec.bot {
+            Some(bot) => self.start_hatch(bot, &prompt, None),
+            None => self.start_brood(&prompt, None),
+        };
+    }
+
     /// First run plants a commented providers.toml — the format is
     /// learned by example, not by reading docs.
     fn ensure_providers(&self) {
@@ -834,14 +844,7 @@ pub fn serve_on(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) -
     {
         let shell = shell.clone();
         thread::spawn(move || {
-            patrol::run(&shell.duties, |d| {
-                let prompt = format!("[routine '{}'] {}", d.spec.name, d.spec.prompt);
-                match &d.spec.bot {
-                    Some(bot) => shell.start_hatch(bot, &prompt, None).map(|_| ()),
-                    None => shell.start_brood(&prompt, None).map(|_| ()),
-                }
-                .ok();
-            });
+            patrol::run(&shell.duties, |d| shell.fire_duty(d));
         });
     }
     let server = Server::from_listener(listener, None)
@@ -1061,6 +1064,19 @@ fn route<'a>(
             match res {
                 Ok(id) => json_response(json!({"id": id})),
                 Err(e) => json_response(json!({"error": format!("{e:#}")})),
+            }
+        }
+        // routine webhook — POST /api/duties/<name>/fire runs the routine
+        // now (the settings "fire" button and external triggers share it)
+        (&Method::Post, p) if p.starts_with("/api/duties/") && p.ends_with("/fire") => {
+            let name = &p["/api/duties/".len()..p.len() - "/fire".len()];
+            match shell.duties.iter().find(|d| d.spec.name == name) {
+                Some(d) => {
+                    d.stamp(patrol::now());
+                    shell.fire_duty(d);
+                    json_response(json!({"fired": name}))
+                }
+                None => json_response(json!({"error": "no such routine"})),
             }
         }
         (&Method::Get, p) if p.starts_with("/api/runs/") && p.ends_with("/events") => {
