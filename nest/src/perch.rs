@@ -25,8 +25,9 @@ pub struct Launch {
 
 /// A harness wrapper. Implement `launch` + `parse`; `binary` is used by
 /// `detect` (return `""` for always-available builtin perches).
-/// `Sync` is required: the driver parses stdout/stderr on reader threads.
-pub trait Perch: Sync {
+/// `Send + Sync` is required: hatches spawn on background threads and the
+/// driver parses stdout/stderr on reader threads.
+pub trait Perch: Send + Sync {
     /// Stable id, e.g. `"claude-code"`, `"echo"`.
     fn name(&self) -> &'static str;
     /// Binary looked up on PATH by `detect`. `""` = builtin, always present.
