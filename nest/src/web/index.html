@@ -393,6 +393,7 @@ async function send() {
 async function refresh() {
   const s = await api('/api/state');
   state.agents = s.agents; state.perches = s.perches;
+  state.duties = s.duties; state.providers = s.providers;
   renderRoster();
   const sb = $('#statusbar');
   const working = s.agents.filter(a => a.state === 'working').map(a => a.name);
@@ -425,7 +426,7 @@ async function loadSettings() {
   document.querySelectorAll('[data-fire]').forEach(b => b.onclick = async () => {
     b.disabled = true;
     await fetch('/api/duties/' + encodeURIComponent(b.dataset.fire) + '/fire', {method:'POST'});
-    b.disabled = false; loadState();
+    b.disabled = false; await refresh(); loadSettings();
   });
   $('#providers').innerHTML = (state.providers || []).map(p =>
     `<tr><td>${esc(p.name)}</td><td>${esc(p.kind)}</td><td><span class="tag ${p.cost === 'free' ? 'done' : ''}">${esc(p.cost)}</span></td><td>${esc(p.model || '—')}</td><td>${esc(p.usage || '—')}</td><td>${p.exhausted ? 'over limit' : p.available ? 'ready' : 'not installed'}</td></tr>`
