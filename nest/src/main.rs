@@ -236,12 +236,19 @@ fn main() -> Result<()> {
             let (dirs, _) = resolve(&cli)?;
             let router = Router::from_dirs(&dirs);
             for p in router.list() {
-                let mark = if p.available {
+                let mark = if p.exhausted {
+                    "over limit"
+                } else if p.available {
                     "ready"
                 } else {
                     "not installed"
                 };
-                println!("{:<18} {:<8} {:<6} {}", p.name, p.kind, p.cost, mark);
+                let model = p.model.as_deref().unwrap_or("-");
+                let usage = p.usage.as_deref().unwrap_or("-");
+                println!(
+                    "{:<18} {:<8} {:<6} {:<14} {:<22} {}",
+                    p.name, p.kind, p.cost, model, usage, mark
+                );
             }
         }
         Cmd::Ask { provider, prompt } => {

@@ -187,6 +187,19 @@ impl Shell {
         }
     }
 
+    /// First run plants a commented providers.toml — the format is
+    /// learned by example, not by reading docs.
+    fn ensure_providers(&self) {
+        let path = self.dirs.home.join("providers.toml");
+        if path.exists() {
+            return;
+        }
+        let _ = std::fs::write(
+            path,
+            "# providers — the free-first router tries these top-to-bottom, first answer wins.\n#\n# [[providers]]            # any local CLI: prompt on stdin, answer on stdout\n# name = \"local-helper\"\n# kind = \"command\"\n# program = \"ollama\"       # or llm, claude -p, …\n# args = [\"run\", \"qwen3\"]\n# cost = \"free\"            # free | cheap | paid — free always answers first\n#\n# [[providers]]            # ollama shorthand — the free-forever local\n# name = \"ollama-qwen\"\n# kind = \"ollama\"\n# model = \"qwen3\"\n# cost = \"free\"\n#\n# [[providers]]            # any OpenAI-compatible endpoint — free tiers included\n# name = \"openrouter-free\"\n# kind = \"openai\"\n# base_url = \"https://openrouter.ai/api/v1\"\n# model = \"deepseek/deepseek-chat-v3-0324:free\"\n# api_key_env = \"OPENROUTER_KEY\"   # env var name, never the key itself\n# cost = \"free\"\n# limit = 50               # CodexBar-style cap…\n# window = \"24h\"           # …per rolling window (5h, 24h, 7d); spent providers sit out\n",
+        );
+    }
+
     /// Seed the in-house bot: if the roster has no `eggbot`, write one to
     /// the personal agents dir. A project `.nest/` eggbot shadows this.
     fn ensure_eggbot(&self) {
@@ -813,6 +826,7 @@ pub fn serve(dirs: NestDirs, cwd: PathBuf, port: u16) -> Result<()> {
 pub fn serve_on(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) -> Result<()> {
     let shell = Arc::new(Shell::new(dirs, cwd));
     shell.ensure_eggbot();
+    shell.ensure_providers();
     {
         let shell = shell.clone();
         thread::spawn(move || remotes_watch(shell));
