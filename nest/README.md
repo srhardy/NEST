@@ -50,8 +50,12 @@ Everything Spoke projects, the engine consumes:
   real install streamed as a run (`POST /api/onboarding`,
   `POST /api/perches/install`).
 - **Providers** — `providers.toml` declares free/cheap/paid backends
-  (`command` or `ollama`); `forage`'s router tries available ones in
-  free-first order with failover (`GET /api/state`, `nest providers`,
+  (`command`, `ollama`, or `openai` for any OpenAI-compatible endpoint:
+  `base_url` + `model`, key via `api_key_env`); `forage`'s router tries
+  available ones in free-first order with failover. `limit`/`window`
+  ("5h", "24h", "7d") adds a CodexBar-style cap per provider — spent
+  windows sit out until reset, tracked in `~/.nest/usage/` and shown
+  on the settings tab (`GET /api/state`, `nest providers`,
   `nest ask --provider x`).
 - **Routines** — `automations.toml` schedules (5-field cron, UTC) and
   `file-change:` watches run as ordinary dispatches via the patrol;
