@@ -161,25 +161,58 @@ impl Forage for OpenAiForage {
     }
 }
 
-/// A 0600 file holding `authorization: Bearer …` for `curl -H @file`;
-/// deleted on drop. Keeps the token out of the process list.
+/// A 0600 file holding `authorization: Bearer …` for `curl -H @file`,
+/// inside a private 0700 dir with a per-call-unique name; both are
+/// deleted on drop. Keeps the token out of the process list, off a
+/// predictable path, and lets concurrent calls in one process coexist.
 struct HeaderFile(std::path::PathBuf);
 impl HeaderFile {
     fn new(key: &str) -> Result<HeaderFile> {
-        let dir = std::env::temp_dir().join(format!("nest-hdr-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join("header");
-        {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        for _ in 0..8 {
+            let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!("nest-hdr-{}-{n}-{nanos}", std::process::id()));
             #[cfg(unix)]
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut opts = std::fs::OpenOptions::new();
-            opts.write(true).create_new(true);
-            #[cfg(unix)]
-            opts.mode(0o600);
-            let mut f = opts.open(&path)?;
-            f.write_all(format!("authorization: Bearer {key}\n").as_bytes())?;
+            let created = {
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new().mode(0o700).create(&dir)
+            };
+            #[cfg(not(unix))]
+            let created = std::fs::create_dir(&dir);
+            match created {
+                Ok(()) => {
+                    let path = dir.join("header");
+                    #[cfg(unix)]
+                    use std::os::unix::fs::OpenOptionsExt;
+                    let mut opts = std::fs::OpenOptions::new();
+                    opts.write(true).create_new(true);
+                    #[cfg(unix)]
+                    opts.mode(0o600);
+                    match opts.open(&path) {
+                        Ok(mut f) => {
+                            std::io::Write::write_all(
+                                &mut f,
+                                format!("authorization: Bearer {key}\n").as_bytes(),
+                            )?;
+                            return Ok(HeaderFile(path));
+                        }
+                        Err(e) => {
+                            let _ = std::fs::remove_dir(&dir);
+                            if e.kind() != std::io::ErrorKind::AlreadyExists {
+                                return Err(e.into());
+                            }
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
+            }
         }
-        Ok(HeaderFile(path))
+        anyhow::bail!("cannot create a unique header dir after 8 tries")
     }
 }
 impl Drop for HeaderFile {

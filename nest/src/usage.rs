@@ -55,18 +55,23 @@ fn now() -> u64 {
         .as_secs()
 }
 
-/// Provider names become filenames — anything else becomes `_`, so a
-/// crafted `../name` can't escape the usage dir.
+/// Provider names become filenames: safe chars pass, every other byte
+/// percent-encodes (`team/a` → `team%2Fa`) — one-to-one, so `team/a`
+/// and `team_a` keep distinct counters and a crafted `../name` can't
+/// escape the usage dir.
 fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+            out.push(c);
+        } else {
+            let mut buf = [0u8; 4];
+            for b in c.encode_utf8(&mut buf).as_bytes() {
+                out.push_str(&format!("%{b:02X}"));
             }
-        })
-        .collect()
+        }
+    }
+    out
 }
 
 fn counter_file(home: &Path, name: &str) -> PathBuf {
@@ -78,22 +83,83 @@ fn lock_file(home: &Path, name: &str) -> PathBuf {
 }
 
 /// O_EXCL lockfile — atomic across processes on every platform we
-/// support (a plain file, removed on drop).
+/// support (a plain file, removed on drop). Its contents record the
+/// owner (`pid,created_ms`) so a lock orphaned by a crash is reclaimed
+/// instead of disabling the provider forever.
 struct Lock(PathBuf);
 impl Lock {
+    /// Milliseconds a lock may sit untouched before rivals may take it.
+    /// Reservations are milliseconds; 30s means the owner is gone.
+    const STALE_MS: u64 = 30_000;
+
+    /// Is the recorded owner still running? `None` = can't tell
+    /// (non-Linux: no /proc), `Some(false)` = provably dead.
+    fn owner_alive(meta: &str) -> Option<bool> {
+        let pid: u64 = meta.split(',').next()?.trim().parse().ok()?;
+        #[cfg(target_os = "linux")]
+        {
+            Some(std::path::Path::new("/proc").join(pid.to_string()).is_dir())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            None // no /proc — fall back to the age test below
+        }
+    }
+
+    /// A lock is stale when its recorded pid is provably dead, or it is
+    /// older than STALE_MS — reclaimed, never a live lock stolen twice:
+    /// the remove+create_new race still resolves to exactly one winner.
+    fn stale(path: &Path) -> bool {
+        let Ok(meta) = std::fs::read_to_string(path) else {
+            return Self::file_age(path) > Self::STALE_MS / 1000;
+        };
+        match Self::owner_alive(&meta) {
+            Some(false) => return true,
+            Some(true) => return false,
+            None => {}
+        }
+        let created: u64 = meta
+            .split(',')
+            .nth(1)
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or_else(|| Self::file_age_anchor(path));
+        created > 0 && now().saturating_sub(created) > Self::STALE_MS / 1000
+    }
+
+    /// File age in seconds — the fallback clock when a lock's metadata
+    /// can't be read or parsed (a crash between create and write).
+    fn file_age(path: &Path) -> u64 {
+        path.metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    fn file_age_anchor(path: &Path) -> u64 {
+        now().saturating_sub(Self::file_age(path))
+    }
+
     /// Spin briefly: reservations are milliseconds, never seconds.
     fn take(path: PathBuf) -> Result<Option<Lock>> {
         for _ in 0..300 {
             match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(_) => return Ok(Some(Lock(path))),
+                Ok(mut f) => {
+                    std::io::Write::write_all(
+                        &mut f,
+                        format!("{},{}", std::process::id(), now()).as_bytes(),
+                    )?;
+                    return Ok(Some(Lock(path)));
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if Self::stale(&path) {
+                        let _ = std::fs::remove_file(&path); // loser retries create_new
+                    }
                     std::thread::sleep(Duration::from_millis(10))
                 }
-                Err(e) => {
-                    return Err(
-                        anyhow::anyhow!("cannot lock {}: {e}", path.display()).into(),
-                    )
-                }
+                Err(e) => return Err(anyhow::anyhow!("cannot lock {}: {e}", path.display())),
             }
         }
         Ok(None)
@@ -123,7 +189,9 @@ fn load(home: &Path, name: &str, window: u64) -> Counter {
     c
 }
 
-/// Write-then-rename so a torn write can't corrupt the counter.
+/// Write-then-rename so a torn write can't corrupt the counter; the
+/// tmp file and its directory are synced so the reservation survives a
+/// crash, not just a torn write.
 fn store(home: &Path, name: &str, c: &Counter) -> Result<()> {
     let path = counter_file(home, name);
     std::fs::create_dir_all(path.parent().unwrap())?;
@@ -131,8 +199,11 @@ fn store(home: &Path, name: &str, c: &Counter) -> Result<()> {
     {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(serde_json::to_string(c)?.as_bytes())?;
+        f.sync_all()?;
     }
     std::fs::rename(&tmp, &path)?;
+    #[cfg(unix)]
+    std::fs::File::open(path.parent().unwrap())?.sync_all()?;
     Ok(())
 }
 
@@ -171,7 +242,7 @@ pub fn try_reserve(home: &Path, spec: &ProviderSpec) -> Result<bool> {
         .as_deref()
         .and_then(window_secs)
         .unwrap_or(86400);
-    std::fs::create_dir_all(lock_file(home, &spec.name).parent().unwrap().to_path_buf())?;
+    std::fs::create_dir_all(lock_file(home, &spec.name).parent().unwrap())?;
     let Some(_lock) = Lock::take(lock_file(home, &spec.name))? else {
         anyhow::bail!("usage counter for '{}' is contended", spec.name);
     };
@@ -256,6 +327,32 @@ mod tests {
         assert!(counter_file(home.path(), "../../etc/evil")
             .to_string_lossy()
             .contains("usage"));
-        assert!(home.path().join("usage").join(".._.._etc_evil.json").exists());
+        assert!(home.path().join("usage").join("..%2F..%2Fetc%2Fevil.json").exists());
+    }
+
+    #[test]
+    fn similar_names_keep_distinct_counters() {
+        // `team/a` must not share `team_a`'s counter (percent-encoding
+        // is one-to-one, not a squashing map).
+        assert_ne!(sanitize("team/a"), sanitize("team_a"));
+        assert_eq!(sanitize("team/a"), "team%2Fa");
+        assert_eq!(sanitize("100%"), "100%25");
+        let home = tempfile::tempdir().unwrap();
+        let a = spec_named("team/a", Some(1), None);
+        let b = spec_named("team_a", Some(1), None);
+        assert!(try_reserve(home.path(), &a).unwrap());
+        assert!(!try_reserve(home.path(), &a).unwrap()); // a spent
+        assert!(try_reserve(home.path(), &b).unwrap()); // b untouched
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn crashed_lock_is_reclaimed() {
+        let home = tempfile::tempdir().unwrap();
+        let s = spec_named("p", Some(1), None);
+        // an orphaned lock whose recorded pid cannot exist
+        std::fs::create_dir_all(home.path().join("usage")).unwrap();
+        std::fs::write(lock_file(home.path(), "p"), "99999999,1").unwrap();
+        assert!(try_reserve(home.path(), &s).unwrap()); // reclaimed, not stuck
     }
 }

@@ -402,9 +402,9 @@ impl Shell {
         });
         self.register_run(run.clone());
         let (run_id, cwd, roost_dir) = (run.id.clone(), self.cwd.clone(), self.dirs.roost());
-        let task = task.to_string();
+        let (task, dirs) = (task.to_string(), self.dirs.clone());
         thread::spawn(move || {
-            let receipt = match hatchling::hatch(&agent, &task, perch.as_ref(), &cwd) {
+            let receipt = match hatchling::hatch(&agent, &task, perch.as_ref(), &cwd, &dirs) {
                 Ok(mut h) => {
                     let run2 = run.clone();
                     let name = agent.name.clone();
@@ -670,10 +670,10 @@ impl Shell {
         });
         self.register_run(run.clone());
         let (run_id, cwd, roost_dir) = (run.id.clone(), self.cwd.clone(), self.dirs.roost());
-        let task = task.to_string();
+        let (task, dirs) = (task.to_string(), self.dirs.clone());
         thread::spawn(move || {
             let run2 = run.clone();
-            match brood.dispatch(&task, perch.as_ref(), &cwd, move |bot, peep| {
+            match brood.dispatch(&task, perch.as_ref(), &cwd, &dirs, move |bot, peep| {
                 run2.emit_peep(bot, peep)
             }) {
                 Ok(dispatch) => {
