@@ -184,8 +184,12 @@ Why this layering wins:
 | `[[bots]]`/`[[automations]]` + boss/permissions/routing/services schema | ✅ **PR #2 + PR #3** (awaiting merge) |
 | `bob-council` starter package (8 agents + 6 skills) | ✅ **PR #3** |
 | Engine spine (nest/ — perches, peeps, roost, brood, forage) | ✅ **PR #4** |
-| The Shell v1 (Phase 2 — one-window app: roster, tabs, watch-it-think, 3 themes, settings.md) | ✅ **PR #5** |
-| Desktop chrome (taskbar, desktop birdy, 1-click installs, eggbot interview) | 🔲 next step |
+| The Shell v1 (Phase 2 — one-window app: roster, tabs, watch-it-think, 3 themes, settings.md) | ✅ **PR #5** (merged) |
+| eggbot interview in the shell + review-hardened server | ✅ **PR #6** |
+| First-run onboarding (name your boss, abilities, engine picks) + real 1-click installs | ✅ `devin/eggbot` |
+| Free-first provider router (`providers.toml` → failover, `nest providers`/`ask`) | ✅ `devin/eggbot` |
+| `remotes` package (telegram/slack/watch folder-spool bridges) | ✅ `devin/eggbot` |
+| Desktop chrome (taskbar, desktop birdy, OS notifications) | 🔲 next step — Tauri wrapper over the shell |
 | Access to the private app repo | 🔲 **needs Steven** (see §9) — only for debloat Track B |
 
 ---

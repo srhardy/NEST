@@ -196,6 +196,9 @@
         <h3 style="margin-top:18px">engines — what powers your bots</h3>
         <p style="color:var(--dim);margin:4px 0 0">detected on this machine; installs stream into the activity tab.</p>
         <div class="engines" id="engines"></div>
+        <h3 style="margin-top:10px">providers — the free-first router</h3>
+        <p style="color:var(--dim);margin:4px 0 0">declared in providers.toml; tried in this order, first answer wins.</p>
+        <table class="runs" style="margin-top:10px"><thead><tr><th>provider</th><th>kind</th><th>cost</th><th>status</th></tr></thead><tbody id="providers"></tbody></table>
         <h3 style="margin-top:10px">power policy</h3>
         <div class="toggles">
           <div><span>free-first router — free tier first, cheapest paid fallback</span><span class="switch"></span></div>
@@ -413,6 +416,9 @@ async function loadSettings() {
       <div class="ins">${p.installed ? 'installed ✓' : (p.install ? `<button class="pill" data-install="${esc(p.name)}" style="padding:4px 12px;font-size:11px">install</button>` : 'manual install')}</div>
     </div>`).join('');
   document.querySelectorAll('[data-install]').forEach(b => b.onclick = () => installEngine(b.dataset.install));
+  $('#providers').innerHTML = (state.providers || []).map(p =>
+    `<tr><td>${esc(p.name)}</td><td>${esc(p.kind)}</td><td><span class="tag ${p.cost === 'free' ? 'done' : ''}">${esc(p.cost)}</span></td><td>${p.available ? 'ready' : 'not installed'}</td></tr>`
+  ).join('') || '<tr><td colspan="4" style="color:var(--dim)">no providers.toml — echo stub answers until you add one</td></tr>';
 }
 
 // a 1-click install is a run like any other — its peeps land in activity

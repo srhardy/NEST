@@ -147,6 +147,69 @@ pub fn load_agents_lenient(dirs: &[PathBuf]) -> (Vec<AgentSpec>, Vec<String>) {
     (agents, warnings)
 }
 
+/// A declared LLM provider — kind determines how it's called.
+/// `command`: any CLI taking the prompt on stdin (`program`+`args`).
+/// `ollama`:  shorthand for `ollama run <model>` — the free-forever local.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderSpec {
+    pub name: String,
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub program: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// free | cheap | paid — the router tries free first, then cheap, then paid.
+    #[serde(default = "default_cost")]
+    pub cost: String,
+}
+
+fn default_kind() -> String {
+    "command".into()
+}
+fn default_cost() -> String {
+    "paid".into()
+}
+
+/// Load `[[providers]]` tables — first file wins on name collisions.
+pub fn load_providers(files: &[PathBuf]) -> (Vec<ProviderSpec>, Vec<String>) {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut providers = Vec::new();
+    let mut warnings = Vec::new();
+    for file in files {
+        if !file.is_file() {
+            continue;
+        }
+        let text = match fs::read_to_string(file) {
+            Ok(t) => t,
+            Err(e) => {
+                warnings.push(format!("cannot read {}: {e}", file.display()));
+                continue;
+            }
+        };
+        #[derive(Deserialize)]
+        struct Table {
+            #[serde(default)]
+            providers: Vec<ProviderSpec>,
+        }
+        match toml::from_str::<Table>(&text) {
+            Ok(t) => {
+                for p in t.providers {
+                    if seen.insert(p.name.clone()) {
+                        providers.push(p);
+                    }
+                }
+            }
+            Err(e) => warnings.push(format!("invalid provider file {}: {e}", file.display())),
+        }
+    }
+    (providers, warnings)
+}
+
 /// Load a `[[route]]` table file (`route` key — matches the Spoke projection).
 pub fn load_routes(files: &[PathBuf]) -> Result<Vec<Route>> {
     #[derive(Deserialize)]

@@ -94,6 +94,11 @@ fn is_executable(path: &std::path::Path) -> bool {
     path.is_file()
 }
 
+/// Public exec-bit check for provider availability (same rule as `which`).
+pub fn is_exec_pub(path: &std::path::Path) -> bool {
+    is_executable(path)
+}
+
 /// The prompt every perch feeds its harness: persona + tool policy + task.
 pub fn build_prompt(agent: &AgentSpec, task: &str) -> String {
     let mut prompt = String::new();

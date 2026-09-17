@@ -333,6 +333,7 @@ impl Shell {
             "agents": agents,
             "warnings": warnings,
             "perches": perch::detected_perches(),
+            "providers": crate::forage::Router::from_dirs(&self.dirs).list(),
             "onboarding": self.onboarding_needed(),
         })
     }
