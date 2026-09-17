@@ -93,35 +93,58 @@ fn agent_entry_file(entry: &Path) -> Option<PathBuf> {
 
 /// Load every agent found under the given `agents/` dirs.
 /// Earlier dirs win on name collisions (project shadows personal).
+/// Strict: the first bad file fails the whole load.
 pub fn load_agents(dirs: &[PathBuf]) -> Result<Vec<AgentSpec>> {
+    let (agents, warnings) = load_agents_lenient(dirs);
+    if let Some(warning) = warnings.into_iter().next() {
+        anyhow::bail!(warning);
+    }
+    Ok(agents)
+}
+
+/// Like `load_agents` but per-file problems become warnings instead of
+/// failing the whole roster — callers that prefer a partial roster (the
+/// shell) get every good bot plus the list of files that didn't parse.
+pub fn load_agents_lenient(dirs: &[PathBuf]) -> (Vec<AgentSpec>, Vec<String>) {
     let mut seen = std::collections::BTreeSet::new();
     let mut agents = Vec::new();
+    let mut warnings = Vec::new();
     for dir in dirs {
         if !dir.is_dir() {
             continue;
         }
-        for entry in fs::read_dir(dir)
-            .with_context(|| format!("cannot read {}", dir.display()))?
-            .filter_map(|e| e.ok())
-        {
+        let entries = match fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                warnings.push(format!("cannot read {}: {e}", dir.display()));
+                continue;
+            }
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
             let Some(file) = agent_entry_file(&path) else {
                 continue;
             };
-            let text = fs::read_to_string(&file)
-                .with_context(|| format!("cannot read {}", file.display()))?;
-            let Some(spec) = parse_agent_md(&text)
-                .with_context(|| format!("invalid agent file {}", file.display()))?
-            else {
-                continue;
+            let text = match fs::read_to_string(&file) {
+                Ok(t) => t,
+                Err(e) => {
+                    warnings.push(format!("cannot read {}: {e}", file.display()));
+                    continue;
+                }
             };
-            if seen.insert(spec.name.clone()) {
-                agents.push(spec);
+            match parse_agent_md(&text) {
+                Ok(Some(spec)) => {
+                    if seen.insert(spec.name.clone()) {
+                        agents.push(spec);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => warnings.push(format!("invalid agent file {}: {e:#}", file.display())),
             }
         }
     }
     agents.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(agents)
+    (agents, warnings)
 }
 
 /// Load a `[[route]]` table file (`route` key — matches the Spoke projection).

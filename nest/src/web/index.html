@@ -229,6 +229,7 @@
 
 <script>
 const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const birdSvg = () => document.getElementById('tpl-bird').content.cloneNode(true);
 const state = { agents: [], perches: [], chatBot: null, tab: 'chat', interviewing: false, session: null };
 const PALETTE = ['#b98bff','#fb923c','#38bdf8','#f472b6','#2dd4bf','#a3e635','#facc15','#f87171'];
@@ -252,7 +253,7 @@ function renderRoster() {
     el.appendChild(birdSvg());
     el.querySelector('.zzz').style.display = a.state === 'idle' ? '' : 'none';
     const info = document.createElement('div');
-    info.innerHTML = `<div class="nm">${a.name}${a.boss ? ' ♛' : ''}</div><div class="jb">${a.job||''}</div>`;
+    info.innerHTML = `<div class="nm">${esc(a.name)}${a.boss ? ' ♛' : ''}</div><div class="jb">${esc(a.job||'')}</div>`;
     el.appendChild(info);
     const dot = document.createElement('span'); dot.className = 'dot'; el.appendChild(dot);
     el.onclick = () => { state.chatBot = a.name; renderTabs(); renderChatHint(); switchPane('chat'); };
@@ -301,7 +302,7 @@ function addMsg(who, text, cls = '') {
   m.className = `msg ${cls || (who === 'you' ? 'me' : 'bot')}`;
   if (who !== 'you') { const b = birdSvg(); b.querySelector('.zzz').remove(); m.appendChild(b); m.style.setProperty('--b', botColor(who)); }
   const bub = document.createElement('div'); bub.className = 'bub';
-  bub.innerHTML = `<div class="who">${who}</div><div class="txt"></div>`;
+  bub.innerHTML = `<div class="who">${esc(who)}</div><div class="txt"></div>`;
   bub.querySelector('.txt').textContent = text;
   m.appendChild(bub);
   $('#chatlog').appendChild(m);
@@ -363,13 +364,14 @@ async function refresh() {
   renderRoster();
   const sb = $('#statusbar');
   const working = s.agents.filter(a => a.state === 'working').map(a => a.name);
-  sb.innerHTML = `<span>${s.agents.length} bots</span><span>${working.length ? working.join(', ') + ' working' : 'all idle'}</span><span>theme: ${document.body.dataset.theme}</span>`;
+  const warn = (s.warnings||[]).length ? `<span style="color:#f87171" title="${esc((s.warnings||[]).join('&#10;'))}">⚠ ${s.warnings.length} bad file(s)</span>` : '';
+  sb.innerHTML = `<span>${s.agents.length} bots</span><span>${working.length ? esc(working.join(', ')) + ' working' : 'all idle'}</span><span>theme: ${document.body.dataset.theme}</span>${warn}`;
 }
 
 async function loadRuns() {
   const { receipts } = await api('/api/runs');
   $('#runs').innerHTML = receipts.map(r =>
-    `<tr><td>${r.id}</td><td>${r.agent}</td><td><span class="tag ${r.status}">${r.status}</span></td><td>${r.steps}</td><td>${((r.finished_ms - r.started_ms)/1000).toFixed(1)}</td></tr>`
+    `<tr><td>${esc(r.id)}</td><td>${esc(r.agent)}</td><td><span class="tag ${esc(r.status)}">${esc(r.status)}</span></td><td>${esc(r.steps)}</td><td>${((r.finished_ms - r.started_ms)/1000).toFixed(1)}</td></tr>`
   ).join('') || '<tr><td colspan="5" style="color:var(--dim)">no runs yet</td></tr>';
 }
 
@@ -380,7 +382,7 @@ async function loadSettings() {
   $('#engines').innerHTML = state.perches.map(p => `
     <div class="engine ${p.installed ? 'installed' : ''}">
       <span class="bird" style="width:34px;height:34px"></span>
-      <div class="en">${p.name}</div>
+      <div class="en">${esc(p.name)}</div>
       <div class="ins">${p.installed ? 'installed ✓' : '1-click install (desktop)'}</div>
     </div>`).join('');
 }

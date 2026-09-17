@@ -6,7 +6,7 @@
 //! wrapper that adds native chrome (taskbar, desktop birdy) embeds this
 //! same page later — nothing here assumes a browser.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::Read;
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
@@ -33,18 +33,35 @@ const INDEX: &str = include_str!("web/index.html");
 /// A run in progress (or finished) — the events the page subscribes to.
 struct Run {
     id: String,
-    label: String,
+    /// Insertion order — used to bound the finished-run cache.
+    order: u64,
     /// Serialized peep objects, in order.
     events: Mutex<Vec<Value>>,
+    /// Bots with a live hatchling right now — Spawned inserts, terminal
+    /// peeps remove. Exact names only; the roster never guesses.
+    active: Mutex<BTreeSet<String>>,
     done: AtomicBool,
     receipt: Mutex<Option<Receipt>>,
 }
+
+/// Finished runs kept for late-joining SSE subscribers. Receipts persist
+/// in the roost forever; the in-memory event buffers do not.
+const MAX_DONE_RUNS: usize = 64;
 
 impl Run {
     fn emit(&self, value: Value) {
         self.events.lock().unwrap().push(value);
     }
     fn emit_peep(&self, bot: &str, peep: &Peep) {
+        match peep {
+            Peep::Spawned { .. } => {
+                self.active.lock().unwrap().insert(bot.to_string());
+            }
+            Peep::Done { .. } | Peep::Failed { .. } | Peep::BudgetExceeded { .. } => {
+                self.active.lock().unwrap().remove(bot);
+            }
+            _ => {}
+        }
         let v = serde_json::to_value(peep).unwrap_or_default();
         self.emit(json!({ "bot": bot, "peep": v }));
     }
@@ -155,7 +172,7 @@ impl Shell {
     /// Seed the in-house bot: if the roster has no `eggbot`, write one to
     /// the personal agents dir. A project `.nest/` eggbot shadows this.
     fn ensure_eggbot(&self) {
-        if self.agents().iter().any(|a| a.name == "eggbot") {
+        if self.agents().0.iter().any(|a| a.name == "eggbot") {
             return;
         }
         let dir = self.dirs.home.join("agents");
@@ -185,7 +202,7 @@ impl Shell {
                 if !ok {
                     return json!({"error": "names must be lowercase-kebab, e.g. pr-reviewer", "question": iv.question(), "draft": iv.draft()});
                 }
-                if self.agents().iter().any(|a| a.name == name) {
+                if self.agents().0.iter().any(|a| a.name == name) {
                     return json!({"error": format!("a bot named {name} already roosts here"), "question": iv.question(), "draft": iv.draft()});
                 }
                 iv.name = name;
@@ -238,14 +255,34 @@ impl Shell {
         Ok(iv.name)
     }
 
-    fn next_id(&self, prefix: &str) -> String {
+    fn next_order(&self) -> u64 {
         let mut seq = self.seq.lock().unwrap();
         *seq += 1;
-        format!("{prefix}-{}", *seq)
+        *seq
     }
 
-    fn agents(&self) -> Vec<AgentSpec> {
-        spec::load_agents(&self.dirs.agent_dirs()).unwrap_or_default()
+    /// The roster plus any agent files that failed to parse — one bad
+    /// file never empties the sidebar.
+    fn agents(&self) -> (Vec<AgentSpec>, Vec<String>) {
+        spec::load_agents_lenient(&self.dirs.agent_dirs())
+    }
+
+    fn register_run(&self, run: Arc<Run>) {
+        let mut runs = self.runs.lock().unwrap();
+        runs.insert(run.id.clone(), run);
+        // evict the oldest finished runs past the cap; receipts persist
+        // in the roost, the streamed events do not need to
+        let mut done: Vec<(u64, String)> = runs
+            .values()
+            .filter(|r| r.done.load(Ordering::SeqCst))
+            .map(|r| (r.order, r.id.clone()))
+            .collect();
+        if done.len() > MAX_DONE_RUNS {
+            done.sort();
+            for (_, id) in done.drain(..done.len() - MAX_DONE_RUNS) {
+                runs.remove(&id);
+            }
+        }
     }
 
     /// A bot's current display state for the roster: a live run means
@@ -253,7 +290,7 @@ impl Shell {
     fn agent_state(&self, name: &str, receipts: &[Receipt]) -> &'static str {
         let runs = self.runs.lock().unwrap();
         for run in runs.values() {
-            if !run.done.load(Ordering::SeqCst) && run.label.contains(name) {
+            if !run.done.load(Ordering::SeqCst) && run.active.lock().unwrap().contains(name) {
                 return "working";
             }
         }
@@ -268,8 +305,8 @@ impl Shell {
 
     fn state_json(&self) -> Value {
         let receipts = roost::receipts(&self.dirs.roost()).unwrap_or_default();
-        let agents: Vec<Value> = self
-            .agents()
+        let (specs, warnings) = self.agents();
+        let agents: Vec<Value> = specs
             .iter()
             .map(|a| {
                 json!({
@@ -285,6 +322,7 @@ impl Shell {
             .collect();
         json!({
             "agents": agents,
+            "warnings": warnings,
             "perches": perch::detected_perches()
                 .iter()
                 .map(|(n, d)| json!({"name": n, "installed": d}))
@@ -298,7 +336,7 @@ impl Shell {
 
     /// Spawn a hatch run in the background; returns the run id.
     fn start_hatch(&self, bot: &str, task: &str, perch_name: Option<&str>) -> Result<String> {
-        let agents = self.agents();
+        let (agents, _) = self.agents();
         let agent = agents
             .iter()
             .find(|a| a.name == bot)
@@ -310,17 +348,16 @@ impl Shell {
             }
             None => perch::default_perch(),
         };
+        let order = self.next_order();
         let run = Arc::new(Run {
-            id: self.next_id("run"),
-            label: format!("hatch:{bot}"),
+            id: format!("run-{order}"),
+            order,
             events: Mutex::new(Vec::new()),
+            active: Mutex::new(BTreeSet::new()),
             done: AtomicBool::new(false),
             receipt: Mutex::new(None),
         });
-        self.runs
-            .lock()
-            .unwrap()
-            .insert(run.id.clone(), run.clone());
+        self.register_run(run.clone());
         let (run_id, cwd, roost_dir) = (run.id.clone(), self.cwd.clone(), self.dirs.roost());
         let task = task.to_string();
         thread::spawn(move || {
@@ -355,7 +392,7 @@ impl Shell {
 
     /// Spawn a brood dispatch in the background.
     fn start_brood(&self, task: &str, perch_name: Option<&str>) -> Result<String> {
-        let agents = self.agents();
+        let (agents, _) = self.agents();
         let routes = spec::load_routes(&self.dirs.routing_files())?;
         let brood = Brood::new(agents, routes);
         let perch = match perch_name {
@@ -364,17 +401,16 @@ impl Shell {
             }
             None => perch::default_perch(),
         };
+        let order = self.next_order();
         let run = Arc::new(Run {
-            id: self.next_id("run"),
-            label: format!("brood:{task}"),
+            id: format!("run-{order}"),
+            order,
             events: Mutex::new(Vec::new()),
+            active: Mutex::new(BTreeSet::new()),
             done: AtomicBool::new(false),
             receipt: Mutex::new(None),
         });
-        self.runs
-            .lock()
-            .unwrap()
-            .insert(run.id.clone(), run.clone());
+        self.register_run(run.clone());
         let (run_id, cwd, roost_dir) = (run.id.clone(), self.cwd.clone(), self.dirs.roost());
         let task = task.to_string();
         thread::spawn(move || {
@@ -455,15 +491,45 @@ pub fn serve(dirs: NestDirs, cwd: PathBuf, port: u16) -> Result<()> {
         .context("cannot resolve shell address")?;
     let server = Server::http(addr).map_err(|e| anyhow::anyhow!("cannot bind {addr}: {e}"))?;
     println!("nest shell listening on http://127.0.0.1:{port}");
-    for mut request in server.incoming_requests() {
+    // each request gets its own thread — an open SSE stream must never
+    // serialize the rest of the API behind it
+    for request in server.incoming_requests() {
         let shell = shell.clone();
-        let method = request.method().clone();
-        let url = request.url().to_string();
-        let (path, _query) = url.split_once('?').unwrap_or((&url, ""));
-        let response = route(&shell, &method, path, &mut request);
-        request.respond(response).ok();
+        thread::spawn(move || {
+            let mut request = request;
+            let method = request.method().clone();
+            let url = request.url().to_string();
+            let path = url.split('?').next().unwrap_or(&url).to_string();
+            let response = route(&shell, &method, &path, &mut request);
+            let _ = request.respond(response);
+        });
     }
     Ok(())
+}
+
+/// Loopback-only writes: a page on another origin can fire a form/fetch
+/// at this server without ever reading the response, so an Origin header
+/// that isn't loopback is rejected. No Origin header means a non-browser
+/// client (curl), which is allowed.
+fn origin_ok(request: &tiny_http::Request) -> bool {
+    let Some(origin) = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Origin"))
+        .map(|h| h.value.as_str())
+    else {
+        return true;
+    };
+    [
+        "http://127.0.0.1",
+        "https://127.0.0.1",
+        "http://localhost",
+        "https://localhost",
+        "http://[::1]",
+        "https://[::1]",
+    ]
+    .iter()
+    .any(|p| origin.starts_with(p))
 }
 
 /// Fixed-length response over a boxed reader (the route return type).
@@ -494,19 +560,31 @@ struct RunStream {
     run: Arc<Run>,
     cursor: usize,
     sent_receipt: bool,
+    /// The serialized frame being written — a `Read` may get a buffer
+    /// smaller than one event, so bytes wait here until fully flushed.
+    pending: VecDeque<u8>,
 }
 
 impl Read for RunStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
         loop {
+            if !self.pending.is_empty() {
+                let n = self.pending.len().min(buf.len());
+                for (i, b) in self.pending.drain(..n).enumerate() {
+                    buf[i] = b;
+                }
+                return Ok(n);
+            }
             let events = self.run.events.lock().unwrap();
             if self.cursor < events.len() {
                 let chunk = format!("data: {}\n\n", events[self.cursor]);
                 self.cursor += 1;
                 drop(events);
-                let n = chunk.len().min(buf.len());
-                buf[..n].copy_from_slice(&chunk.as_bytes()[..n]);
-                return Ok(n);
+                self.pending.extend(chunk.bytes());
+                continue;
             }
             if self.run.done.load(Ordering::SeqCst) {
                 drop(events);
@@ -515,15 +593,16 @@ impl Read for RunStream {
                 }
                 self.sent_receipt = true;
                 let receipt = self.run.receipt.lock().unwrap();
-                if let Some(receipt) = receipt.as_ref() {
-                    let v =
-                        serde_json::to_string(&json!({ "receipt": receipt })).unwrap_or_default();
-                    let chunk = format!("event: receipt\ndata: {v}\n\n");
-                    let n = chunk.len().min(buf.len());
-                    buf[..n].copy_from_slice(&chunk.as_bytes()[..n]);
-                    return Ok(n);
+                match receipt.as_ref() {
+                    Some(receipt) => {
+                        let v = serde_json::to_string(&json!({ "receipt": receipt }))
+                            .unwrap_or_default();
+                        self.pending
+                            .extend(format!("event: receipt\ndata: {v}\n\n").bytes());
+                        continue;
+                    }
+                    None => return Ok(0),
                 }
-                return Ok(0);
             }
             drop(events);
             thread::sleep(Duration::from_millis(120));
@@ -537,6 +616,9 @@ fn route<'a>(
     path: &str,
     request: &mut tiny_http::Request,
 ) -> Response<Box<dyn Read + Send + 'a>> {
+    if !matches!(method, &Method::Get) && !origin_ok(request) {
+        return respond("forbidden origin".into(), "text/plain", 403);
+    }
     match (method, path) {
         (&Method::Get, "/") => respond(INDEX.to_string(), "text/html; charset=utf-8", 200),
         (&Method::Get, "/api/state") => json_response(shell.state_json()),
@@ -569,11 +651,7 @@ fn route<'a>(
             }
         }
         (&Method::Post, "/api/interview/start") => {
-            let session = {
-                let mut seq = shell.seq.lock().unwrap();
-                *seq += 1;
-                *seq
-            };
+            let session = shell.next_order();
             let iv = Interview::default();
             let question = iv.question();
             shell.interviews.lock().unwrap().insert(session, iv);
@@ -625,6 +703,7 @@ fn route<'a>(
                         run,
                         cursor: 0,
                         sent_receipt: false,
+                        pending: VecDeque::new(),
                     }) as Box<dyn Read + Send>,
                     None,
                     None,
