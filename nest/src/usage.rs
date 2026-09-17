@@ -89,11 +89,7 @@ impl Lock {
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     std::thread::sleep(Duration::from_millis(10))
                 }
-                Err(e) => {
-                    return Err(
-                        anyhow::anyhow!("cannot lock {}: {e}", path.display()).into(),
-                    )
-                }
+                Err(e) => return Err(anyhow::anyhow!("cannot lock {}: {e}", path.display())),
             }
         }
         Ok(None)
@@ -171,7 +167,7 @@ pub fn try_reserve(home: &Path, spec: &ProviderSpec) -> Result<bool> {
         .as_deref()
         .and_then(window_secs)
         .unwrap_or(86400);
-    std::fs::create_dir_all(lock_file(home, &spec.name).parent().unwrap().to_path_buf())?;
+    std::fs::create_dir_all(lock_file(home, &spec.name).parent().unwrap())?;
     let Some(_lock) = Lock::take(lock_file(home, &spec.name))? else {
         anyhow::bail!("usage counter for '{}' is contended", spec.name);
     };
