@@ -1,0 +1,15 @@
+# NEST environment — Rust toolchain for the spoke workspace (spoke/).
+initialize:
+  - run: rustup update stable
+maintenance:
+  - run: (cd spoke && cargo fetch)
+knowledge:
+  - name: build
+    contents: |
+      (cd spoke && cargo build)
+  - name: test
+    contents: |
+      (cd spoke && cargo test)
+  - name: notes
+    contents: |
+      clap 4.6.x requires edition2024-capable cargo (>=1.85); run `rustup update stable` if cargo fails on that.
