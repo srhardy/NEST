@@ -48,6 +48,16 @@ impl NestDirs {
         files
     }
 
+    /// Provider table candidates — the free-first router reads these.
+    pub fn provider_files(&self) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        if let Some(p) = &self.project {
+            files.push(p.join("providers.toml"));
+        }
+        files.push(self.home.join("providers.toml"));
+        files
+    }
+
     /// Service table candidates.
     pub fn services_files(&self) -> Vec<PathBuf> {
         let mut files = Vec::new();

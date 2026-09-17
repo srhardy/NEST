@@ -44,6 +44,11 @@ pub trait Perch: Send + Sync {
     fn launch(&self, agent: &AgentSpec, task: &str) -> Launch;
     /// One output line → one peep. `None` skips the line.
     fn parse(&self, line: &str) -> Option<Peep>;
+    /// The one-click install command (run via `sh -c`), when this perch
+    /// can install itself. Builtin stubs return `None`.
+    fn install_cmd(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// PATH lookup — is `bin` an *executable* file somewhere on PATH?
@@ -87,6 +92,11 @@ fn is_executable(path: &std::path::Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable(path: &std::path::Path) -> bool {
     path.is_file()
+}
+
+/// Public exec-bit check for provider availability (same rule as `which`).
+pub fn is_exec_pub(path: &std::path::Path) -> bool {
+    is_executable(path)
 }
 
 /// The prompt every perch feeds its harness: persona + tool policy + task.
@@ -178,6 +188,9 @@ impl Perch for ClaudeCode {
             _ => None,
         }
     }
+    fn install_cmd(&self) -> Option<&'static str> {
+        Some("npm i -g @anthropic-ai/claude-code")
+    }
 }
 
 /// `codex` (Codex CLI): `codex exec --json <prompt>` — JSONL turn events.
@@ -207,6 +220,33 @@ impl Perch for Codex {
             "turn.completed" | "turn.started" => None,
             _ => Some(Peep::Output { text: line.into() }),
         }
+    }
+    fn install_cmd(&self) -> Option<&'static str> {
+        Some("npm i -g @openai/codex")
+    }
+}
+
+/// `opencode` (OpenCode CLI): `opencode run <prompt>` — plain lines out.
+pub struct OpenCode;
+impl Perch for OpenCode {
+    fn name(&self) -> &'static str {
+        "opencode"
+    }
+    fn binary(&self) -> &'static str {
+        "opencode"
+    }
+    fn launch(&self, agent: &AgentSpec, task: &str) -> Launch {
+        Launch {
+            program: "opencode".into(),
+            args: vec!["run".into(), build_prompt(agent, task)],
+            env: BTreeMap::new(),
+        }
+    }
+    fn parse(&self, line: &str) -> Option<Peep> {
+        (!line.trim().is_empty()).then(|| Peep::Output { text: line.into() })
+    }
+    fn install_cmd(&self) -> Option<&'static str> {
+        Some("npm i -g opencode-ai")
     }
 }
 
@@ -264,6 +304,7 @@ pub fn all_perches() -> Vec<Box<dyn Perch>> {
     vec![
         Box::new(ClaudeCode),
         Box::new(Codex),
+        Box::new(OpenCode),
         Box::new(Echo),
         Box::new(Fail),
     ]
@@ -282,11 +323,25 @@ pub fn default_perch() -> Box<dyn Perch> {
         .unwrap_or_else(|| Box::new(Echo))
 }
 
-/// Everything installed, for `nest perches`.
-pub fn detected_perches() -> Vec<(&'static str, bool)> {
+/// One row of the engines table: name, installed?, and the one-click
+/// install command when it has one.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PerchInfo {
+    pub name: &'static str,
+    pub installed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install: Option<&'static str>,
+}
+
+/// Everything installed, for `nest perches` / the shell's engine cards.
+pub fn detected_perches() -> Vec<PerchInfo> {
     all_perches()
         .iter()
-        .map(|p| (p.name(), p.detect()))
+        .map(|p| PerchInfo {
+            name: p.name(),
+            installed: p.detect(),
+            install: p.install_cmd(),
+        })
         .collect()
 }
 

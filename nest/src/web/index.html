@@ -173,13 +173,32 @@
         <table class="runs"><thead><tr><th>run</th><th>bot</th><th>status</th><th>steps</th><th>secs</th></tr></thead><tbody id="runs"></tbody></table>
       </div>
     </div>
+    <div class="pane" id="pane-interview">
+      <div class="scroll" style="display:flex;gap:24px">
+        <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+          <div class="chatlog" id="iv-log" style="padding:6px 0"></div>
+          <div class="chatin" style="border-top:none;padding-left:0">
+            <input id="iv-input" placeholder="answer eggbot…" autocomplete="off">
+            <button id="iv-send">answer</button>
+          </div>
+        </div>
+        <div style="width:320px;flex-shrink:0">
+          <h3>preview — the file it writes</h3>
+          <pre id="iv-draft" style="margin-top:10px;background:var(--card);border:1px solid var(--edge);border-radius:12px;padding:14px;color:var(--text);font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap"></pre>
+          <button class="pill" id="iv-build" style="display:none;margin-top:10px;padding:8px 18px">🐣 build it</button>
+        </div>
+      </div>
+    </div>
     <div class="pane" id="pane-settings">
       <div class="scroll">
         <h3>settings — backed by <span id="settings-path" style="color:var(--dim)"></span></h3>
         <p style="color:var(--dim);margin:6px 0 12px">everything here is a plain file — edit it in the GUI or by hand; they stay the same truth.</p>
         <h3 style="margin-top:18px">engines — what powers your bots</h3>
-        <p style="color:var(--dim);margin:4px 0 0">detected on this machine; 1-click installs land in the desktop build.</p>
+        <p style="color:var(--dim);margin:4px 0 0">detected on this machine; installs stream into the activity tab.</p>
         <div class="engines" id="engines"></div>
+        <h3 style="margin-top:10px">providers — the free-first router</h3>
+        <p style="color:var(--dim);margin:4px 0 0">declared in providers.toml; tried in this order, first answer wins.</p>
+        <table class="runs" style="margin-top:10px"><thead><tr><th>provider</th><th>kind</th><th>cost</th><th>status</th></tr></thead><tbody id="providers"></tbody></table>
         <h3 style="margin-top:10px">power policy</h3>
         <div class="toggles">
           <div><span>free-first router — free tier first, cheapest paid fallback</span><span class="switch"></span></div>
@@ -199,6 +218,32 @@
 
 <div id="toasts"></div>
 
+<!-- first-run onboarding -->
+<div id="onboard" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:50;align-items:center;justify-content:center">
+  <div style="width:520px;max-height:86vh;overflow:auto;background:var(--card);border:1px solid var(--edge);border-radius:16px;padding:26px;color:var(--text)">
+    <div style="display:flex;align-items:center;gap:14px">
+      <span class="bird" style="width:52px;height:52px"></span>
+      <div><h2 style="margin:0">welcome to the nest</h2>
+      <p style="color:var(--dim);margin:4px 0 0">one minute of setup — you can change all of it later</p></div>
+    </div>
+    <h3 style="margin:20px 0 6px">1 · name your boss bot</h3>
+    <p style="color:var(--dim);margin:0 0 6px">the boss keeps an eye on everything and hands work to the right bot.</p>
+    <input id="ob-name" value="bigbird" style="width:100%;box-sizing:border-box;background:#000;border:1px solid var(--edge);border-radius:8px;color:var(--text);padding:8px">
+    <input id="ob-job" placeholder="its job (optional)" style="width:100%;box-sizing:border-box;margin-top:8px;background:#000;border:1px solid var(--edge);border-radius:8px;color:var(--text);padding:8px">
+    <h3 style="margin:18px 0 6px">2 · what may it touch?</h3>
+    <label style="display:block;margin:4px 0"><input type="checkbox" id="ob-read" checked> read your files</label>
+    <label style="display:block;margin:4px 0"><input type="checkbox" id="ob-write" checked> write + edit files</label>
+    <label style="display:block;margin:4px 0"><input type="checkbox" id="ob-run"> run commands (bash)</label>
+    <h3 style="margin:18px 0 6px">3 · engines to install</h3>
+    <p style="color:var(--dim);margin:0 0 6px">bots ride these CLIs — pick any to install now (1 click each).</p>
+    <div id="ob-engines"></div>
+    <div style="margin-top:20px;display:flex;gap:10px">
+      <button class="pill" id="ob-go" style="padding:10px 22px">build my nest</button>
+      <button id="ob-skip" style="background:none;border:none;color:var(--dim);cursor:pointer">skip for now</button>
+    </div>
+  </div>
+</div>
+
 <!-- bird template -->
 <template id="tpl-bird">
   <span class="bwrap"><span class="bird"><svg viewBox="0 0 48 48">
@@ -213,8 +258,9 @@
 
 <script>
 const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const birdSvg = () => document.getElementById('tpl-bird').content.cloneNode(true);
-const state = { agents: [], perches: [], chatBot: null, tab: 'chat' };
+const state = { agents: [], perches: [], chatBot: null, tab: 'chat', interviewing: false, session: null };
 const PALETTE = ['#b98bff','#fb923c','#38bdf8','#f472b6','#2dd4bf','#a3e635','#facc15','#f87171'];
 
 async function api(path, body) {
@@ -236,7 +282,7 @@ function renderRoster() {
     el.appendChild(birdSvg());
     el.querySelector('.zzz').style.display = a.state === 'idle' ? '' : 'none';
     const info = document.createElement('div');
-    info.innerHTML = `<div class="nm">${a.name}${a.boss ? ' ♛' : ''}</div><div class="jb">${a.job||''}</div>`;
+    info.innerHTML = `<div class="nm">${esc(a.name)}${a.boss ? ' ♛' : ''}</div><div class="jb">${esc(a.job||'')}</div>`;
     el.appendChild(info);
     const dot = document.createElement('span'); dot.className = 'dot'; el.appendChild(dot);
     el.onclick = () => { state.chatBot = a.name; renderTabs(); renderChatHint(); switchPane('chat'); };
@@ -252,8 +298,9 @@ function renderTabs() {
   const tabs = [
     ['chat', state.chatBot ? `chat — ${state.chatBot}` : 'ask the nest', state.chatBot],
     ['activity', 'activity', null],
-    ['settings', 'settings', null],
   ];
+  if (state.interviewing) tabs.push(['interview', '🥚 eggbot', 'eggbot']);
+  tabs.push(['settings', 'settings', null]);
   for (const [id, label, bot] of tabs) {
     const b = document.createElement('button');
     b.className = 'tab' + (state.tab === id ? ' active' : '') + (bot ? ' tab-bot' : '');
@@ -284,7 +331,7 @@ function addMsg(who, text, cls = '') {
   m.className = `msg ${cls || (who === 'you' ? 'me' : 'bot')}`;
   if (who !== 'you') { const b = birdSvg(); b.querySelector('.zzz').remove(); m.appendChild(b); m.style.setProperty('--b', botColor(who)); }
   const bub = document.createElement('div'); bub.className = 'bub';
-  bub.innerHTML = `<div class="who">${who}</div><div class="txt"></div>`;
+  bub.innerHTML = `<div class="who">${esc(who)}</div><div class="txt"></div>`;
   bub.querySelector('.txt').textContent = text;
   m.appendChild(bub);
   $('#chatlog').appendChild(m);
@@ -346,13 +393,15 @@ async function refresh() {
   renderRoster();
   const sb = $('#statusbar');
   const working = s.agents.filter(a => a.state === 'working').map(a => a.name);
-  sb.innerHTML = `<span>${s.agents.length} bots</span><span>${working.length ? working.join(', ') + ' working' : 'all idle'}</span><span>theme: ${document.body.dataset.theme}</span>`;
+  const warn = (s.warnings||[]).length ? `<span style="color:#f87171" title="${esc((s.warnings||[]).join('&#10;'))}">⚠ ${s.warnings.length} bad file(s)</span>` : '';
+  sb.innerHTML = `<span>${s.agents.length} bots</span><span>${working.length ? esc(working.join(', ')) + ' working' : 'all idle'}</span><span>theme: ${document.body.dataset.theme}</span>${warn}`;
+  if (s.onboarding && !state.onboardShown) { state.onboardShown = true; showOnboard(); }
 }
 
 async function loadRuns() {
   const { receipts } = await api('/api/runs');
   $('#runs').innerHTML = receipts.map(r =>
-    `<tr><td>${r.id}</td><td>${r.agent}</td><td><span class="tag ${r.status}">${r.status}</span></td><td>${r.steps}</td><td>${((r.finished_ms - r.started_ms)/1000).toFixed(1)}</td></tr>`
+    `<tr><td>${esc(r.id)}</td><td>${esc(r.agent)}</td><td><span class="tag ${esc(r.status)}">${esc(r.status)}</span></td><td>${esc(r.steps)}</td><td>${((r.finished_ms - r.started_ms)/1000).toFixed(1)}</td></tr>`
   ).join('') || '<tr><td colspan="5" style="color:var(--dim)">no runs yet</td></tr>';
 }
 
@@ -361,11 +410,63 @@ async function loadSettings() {
   $('#settings-path').textContent = s.path;
   $('#settings-md').value = s.content || '# nest settings\n\ntheme: multi\nfollow_os_theme: true\nrouter: free-first\nauto_api_keys: true\nnotifications: themed\n';
   $('#engines').innerHTML = state.perches.map(p => `
-    <div class="engine ${p.installed ? 'installed' : ''}">
+    <div class="engine ${p.installed ? 'installed' : ''}" id="eng-${esc(p.name)}">
       <span class="bird" style="width:34px;height:34px"></span>
-      <div class="en">${p.name}</div>
-      <div class="ins">${p.installed ? 'installed ✓' : '1-click install (desktop)'}</div>
+      <div class="en">${esc(p.name)}</div>
+      <div class="ins">${p.installed ? 'installed ✓' : (p.install ? `<button class="pill" data-install="${esc(p.name)}" style="padding:4px 12px;font-size:11px">install</button>` : 'manual install')}</div>
     </div>`).join('');
+  document.querySelectorAll('[data-install]').forEach(b => b.onclick = () => installEngine(b.dataset.install));
+  $('#providers').innerHTML = (state.providers || []).map(p =>
+    `<tr><td>${esc(p.name)}</td><td>${esc(p.kind)}</td><td><span class="tag ${p.cost === 'free' ? 'done' : ''}">${esc(p.cost)}</span></td><td>${p.available ? 'ready' : 'not installed'}</td></tr>`
+  ).join('') || '<tr><td colspan="4" style="color:var(--dim)">no providers.toml — echo stub answers until you add one</td></tr>';
+}
+
+// a 1-click install is a run like any other — its peeps land in activity
+async function installEngine(name) {
+  const card = $('#eng-' + CSS.escape(name));
+  if (card) card.querySelector('.ins').textContent = 'installing…';
+  const r = await api('/api/perches/install', { name });
+  if (r.error) { if (card) card.querySelector('.ins').textContent = 'failed — ' + r.error; return; }
+  toast(`installing ${name}`);
+  const es = new EventSource(`/api/runs/${r.id}/events`);
+  es.addEventListener('receipt', () => { es.close(); refresh(); loadSettings(); });
+  es.onerror = () => { es.close(); refresh(); loadSettings(); };
+}
+
+// settings.md is the source of truth for the theme unless the user overrode
+async function applySavedTheme() {
+  if (localStorage.getItem('nest-theme')) return;
+  const s = await api('/api/settings');
+  const m = (s.content || '').match(/^\s*theme:\s*(\S+)/m);
+  if (m && ['fluro','mono','multi'].includes(m[1])) {
+    document.body.dataset.theme = m[1];
+    $('#theme').value = m[1];
+  }
+}
+
+function showOnboard() {
+  const el = $('#onboard');
+  el.style.display = 'flex';
+  el.querySelector('.bird').appendChild(birdSvg());
+  el.querySelector('.zzz').remove();
+  $('#ob-engines').innerHTML = state.perches
+    .filter(p => !p.installed && p.install)
+    .map(p => `<label style="display:block;margin:4px 0"><input type="checkbox" class="ob-eng" value="${esc(p.name)}"> ${esc(p.name)} — <span style="color:var(--dim)">${esc(p.install)}</span></label>`)
+    .join('') || '<p style="color:var(--dim)">all engines installed (or none installable)</p>';
+  $('#ob-skip').onclick = () => el.style.display = 'none';
+  $('#ob-go').onclick = async () => {
+    const abilities = ['read','write','commands'].filter((_, i) => [$('#ob-read'),$('#ob-write'),$('#ob-run')][i].checked);
+    const engines = [...document.querySelectorAll('.ob-eng:checked')].map(c => c.value);
+    const r = await api('/api/onboarding', {
+      name: $('#ob-name').value.trim() || 'bigbird',
+      job: $('#ob-job').value.trim(),
+      abilities, engines,
+    });
+    if (r.error) { toast(r.error); return; }
+    el.style.display = 'none';
+    toast(`say hi to ${r.boss} — your boss bot`);
+    refresh();
+  };
 }
 
 $('#save-settings').onclick = async () => {
@@ -381,11 +482,63 @@ $('#theme').onchange = e => {
 document.body.dataset.theme = localStorage.getItem('nest-theme') || 'multi';
 $('#theme').value = document.body.dataset.theme;
 $('#mode').onclick = e => { e.target.textContent = e.target.textContent === 'guided' ? 'expert' : 'guided'; };
-$('#addbot').onclick = () => switchPane('settings');  // eggbot interview lands with the shell's next pass
+$('#addbot').onclick = startInterview;
+
+function ivMsg(text, cls) {
+  const m = document.createElement('div');
+  m.className = `msg ${cls}`;
+  if (cls !== 'me') { const b = birdSvg(); b.querySelector('.zzz')?.remove(); m.appendChild(b); }
+  const bub = document.createElement('div'); bub.className = 'bub';
+  bub.innerHTML = `<div class="who">${cls === 'me' ? 'you' : 'eggbot'}</div><div class="txt"></div>`;
+  bub.querySelector('.txt').textContent = text;
+  m.appendChild(bub);
+  $('#iv-log').appendChild(m);
+  $('#iv-log').scrollTop = 1e9;
+}
+
+async function startInterview() {
+  state.interviewing = true;
+  $('#iv-log').innerHTML = '';
+  const r = await api('/api/interview/start', {});
+  state.session = r.session;
+  ivMsg('hello! I build bots. four questions and yours joins the roster.', 'bot');
+  ivMsg(r.question, 'bot');
+  switchPane('interview');
+  $('#iv-input').focus();
+}
+
+async function ivSend() {
+  const answer = $('#iv-input').value.trim();
+  if (!answer) return;
+  $('#iv-input').value = '';
+  ivMsg(answer, 'me');
+  const r = await api('/api/interview/answer', { session: state.session, answer });
+  if (r.draft) $('#iv-draft').textContent = r.draft;
+  if (r.error) { ivMsg(r.error + ' — try again', 'bot'); return; }
+  if (r.done) { $('#iv-build').style.display = ''; ivMsg('all set — hit build it, or keep editing by answering', 'bot'); return; }
+  if (r.question) ivMsg(r.question, 'bot');
+}
+
+async function ivBuild() {
+  const r = await api('/api/interview/build', { session: state.session });
+  if (r.error) { ivMsg('could not build: ' + r.error, 'bot'); return; }
+  toast(`${r.built} hatched — joined the roster`);
+  state.interviewing = false;
+  $('#iv-build').style.display = 'none';
+  await refresh();
+  state.chatBot = r.built;
+  renderChatHint();
+  switchPane('chat');
+}
+
+$('#iv-send').onclick = ivSend;
+$('#iv-input').addEventListener('keydown', e => { if (e.key === 'Enter') ivSend(); });
+$('#iv-build').onclick = ivBuild;
 $('#send').onclick = send;
 $('#task').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 
-renderTabs(); renderChatHint(); refresh();
+renderTabs(); renderChatHint(); applySavedTheme();
+refresh();
 setInterval(refresh, 3000);
 </script>
 </body>

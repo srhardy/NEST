@@ -93,35 +93,121 @@ fn agent_entry_file(entry: &Path) -> Option<PathBuf> {
 
 /// Load every agent found under the given `agents/` dirs.
 /// Earlier dirs win on name collisions (project shadows personal).
+/// Strict: the first bad file fails the whole load.
 pub fn load_agents(dirs: &[PathBuf]) -> Result<Vec<AgentSpec>> {
+    let (agents, warnings) = load_agents_lenient(dirs);
+    if let Some(warning) = warnings.into_iter().next() {
+        anyhow::bail!(warning);
+    }
+    Ok(agents)
+}
+
+/// Like `load_agents` but per-file problems become warnings instead of
+/// failing the whole roster — callers that prefer a partial roster (the
+/// shell) get every good bot plus the list of files that didn't parse.
+pub fn load_agents_lenient(dirs: &[PathBuf]) -> (Vec<AgentSpec>, Vec<String>) {
     let mut seen = std::collections::BTreeSet::new();
     let mut agents = Vec::new();
+    let mut warnings = Vec::new();
     for dir in dirs {
         if !dir.is_dir() {
             continue;
         }
-        for entry in fs::read_dir(dir)
-            .with_context(|| format!("cannot read {}", dir.display()))?
-            .filter_map(|e| e.ok())
-        {
+        let entries = match fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                warnings.push(format!("cannot read {}: {e}", dir.display()));
+                continue;
+            }
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
             let Some(file) = agent_entry_file(&path) else {
                 continue;
             };
-            let text = fs::read_to_string(&file)
-                .with_context(|| format!("cannot read {}", file.display()))?;
-            let Some(spec) = parse_agent_md(&text)
-                .with_context(|| format!("invalid agent file {}", file.display()))?
-            else {
-                continue;
+            let text = match fs::read_to_string(&file) {
+                Ok(t) => t,
+                Err(e) => {
+                    warnings.push(format!("cannot read {}: {e}", file.display()));
+                    continue;
+                }
             };
-            if seen.insert(spec.name.clone()) {
-                agents.push(spec);
+            match parse_agent_md(&text) {
+                Ok(Some(spec)) => {
+                    if seen.insert(spec.name.clone()) {
+                        agents.push(spec);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => warnings.push(format!("invalid agent file {}: {e:#}", file.display())),
             }
         }
     }
     agents.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(agents)
+    (agents, warnings)
+}
+
+/// A declared LLM provider — kind determines how it's called.
+/// `command`: any CLI taking the prompt on stdin (`program`+`args`).
+/// `ollama`:  shorthand for `ollama run <model>` — the free-forever local.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderSpec {
+    pub name: String,
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub program: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// free | cheap | paid — the router tries free first, then cheap, then paid.
+    #[serde(default = "default_cost")]
+    pub cost: String,
+}
+
+fn default_kind() -> String {
+    "command".into()
+}
+fn default_cost() -> String {
+    "paid".into()
+}
+
+/// Load `[[providers]]` tables — first file wins on name collisions.
+pub fn load_providers(files: &[PathBuf]) -> (Vec<ProviderSpec>, Vec<String>) {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut providers = Vec::new();
+    let mut warnings = Vec::new();
+    for file in files {
+        if !file.is_file() {
+            continue;
+        }
+        let text = match fs::read_to_string(file) {
+            Ok(t) => t,
+            Err(e) => {
+                warnings.push(format!("cannot read {}: {e}", file.display()));
+                continue;
+            }
+        };
+        #[derive(Deserialize)]
+        struct Table {
+            #[serde(default)]
+            providers: Vec<ProviderSpec>,
+        }
+        match toml::from_str::<Table>(&text) {
+            Ok(t) => {
+                for p in t.providers {
+                    if seen.insert(p.name.clone()) {
+                        providers.push(p);
+                    }
+                }
+            }
+            Err(e) => warnings.push(format!("invalid provider file {}: {e}", file.display())),
+        }
+    }
+    (providers, warnings)
 }
 
 /// Load a `[[route]]` table file (`route` key — matches the Spoke projection).
