@@ -1,0 +1,28 @@
+name = "remotes"
+version = "0.1.0"
+description = "Remote-control shelf — telegram, slack and watch bridges as plain folder spools (stdlib Python, no frameworks)"
+tier = "curated"
+
+[source]
+path = "."
+
+# Each remote is a skill: a SKILL.md the boss learns + the bridge script it
+# runs. Declaring the service in agent.toml starts the bridge with the nest:
+#
+#   [[services]]
+#   name = "telegram-remote"
+#   start_cmd = "python3 ~/.nest/skills/telegram-remote/bridge.py"
+#
+# Config files live in ~/.nest/remotes/<name>.toml — see each SKILL.md.
+
+[[skills]]
+name = "telegram-remote"
+path = "skills/telegram-remote"
+
+[[skills]]
+name = "slack-remote"
+path = "skills/slack-remote"
+
+[[skills]]
+name = "watch-remote"
+path = "skills/watch-remote"

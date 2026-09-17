@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use nest::brood::Brood;
-use nest::forage::{EchoForage, Forage, ForageRequest};
+use nest::forage::{ForageRequest, Router};
 use nest::hatchling::{self, Status};
 use nest::home::NestDirs;
 use nest::peep::Peep;
@@ -56,8 +56,15 @@ enum Cmd {
     Roost,
     /// A bot's first verified run — a bot that hasn't run isn't done.
     Imprint { bot: String, task: Vec<String> },
-    /// Direct provider call (the forage layer, echo stub for now).
-    Ask { prompt: Vec<String> },
+    /// Direct provider call — free-first router across providers.toml.
+    Ask {
+        /// Force one provider by name (default: cheapest available).
+        #[arg(long)]
+        provider: Option<String>,
+        prompt: Vec<String>,
+    },
+    /// List declared providers in router order (free → cheap → paid).
+    Providers,
     /// Open the shell — the one-window app over the engine.
     Shell {
         /// Port to listen on (default 4747).
@@ -133,9 +140,15 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
         Cmd::Perches => {
-            for (name, found) in perch::detected_perches() {
-                let mark = if found { "installed" } else { "not found" };
-                println!("{name:<14} {mark}");
+            for p in perch::detected_perches() {
+                let mark = if p.installed {
+                    "installed".to_string()
+                } else {
+                    p.install
+                        .map(|c| format!("not found — install: {c}"))
+                        .unwrap_or_else(|| "not found".into())
+                };
+                println!("{:<14} {}", p.name, mark);
             }
         }
         Cmd::Agents => {
@@ -219,13 +232,26 @@ fn main() -> Result<()> {
                 );
             }
         }
-        Cmd::Ask { prompt } => {
+        Cmd::Providers => {
+            let (dirs, _) = resolve(&cli)?;
+            let router = Router::from_dirs(&dirs);
+            for p in router.list() {
+                let mark = if p.available {
+                    "ready"
+                } else {
+                    "not installed"
+                };
+                println!("{:<18} {:<8} {:<6} {}", p.name, p.kind, p.cost, mark);
+            }
+        }
+        Cmd::Ask { provider, prompt } => {
+            let (dirs, _) = resolve(&cli)?;
             let req = ForageRequest {
                 prompt: prompt.join(" "),
-                model: None,
+                model: provider.clone(),
                 tier: None,
             };
-            let res = EchoForage.complete(&req)?;
+            let res = Router::from_dirs(&dirs).complete(&req)?;
             println!("{} [{}]", res.text, res.provider);
         }
         Cmd::Shell { port } => {

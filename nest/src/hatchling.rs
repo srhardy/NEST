@@ -19,7 +19,8 @@ use crate::peep::Peep;
 use crate::perch::Perch;
 use crate::spec::AgentSpec;
 
-fn now_ms() -> u64 {
+/// Unix epoch millis — receipts and hatchling ids stamp with this.
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
