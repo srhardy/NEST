@@ -162,7 +162,8 @@ Why this layering wins:
 | Fork survey (142 repos) + BobTheBuilder deep-dive | ✅ `research/07` |
 | `[[bots]]`/`[[automations]]` + boss/permissions/routing/services schema | ✅ **PR #2 + PR #3** (awaiting merge) |
 | `bob-council` starter package (8 agents + 6 skills) | ✅ **PR #3** |
-| Engine spine (Phase 2b — wrap-don't-rebuild) | 🔲 next step |
+| Engine spine (nest/ — perches, peeps, roost, brood, forage) | ✅ **PR #4** |
+| The Shell (Phase 2 — one-window noob app) | 🔲 next step |
 | Access to the private app repo | 🔲 **needs Steven** (see §9) — only for debloat Track B |
 
 ---
@@ -357,7 +358,7 @@ learning loop: bot → SKILL.md → `spoke add` self-install → provenance in
 | **1a — Installer upstream** | patch lands on CommandCodeAI/desktop (or issue filed) | their repo access or issue | minutes |
 | **2 — The Shell (flagship)** | one-window app: tab strip, sidebar roster of **animated bot characters** (idle/thinking/working/stuck states), Guided/Expert mode toggle, first-run onboarding — plus the **watch-it-think loop view** (waku-agent gem: every step the agent takes lights up on a visible loop, Guided mode's transparency) | **new repo (Steven is creating)** + engine spine (2b) | 1–2 sessions after access |
 | **2a — eggbot in the shell** | the walkthrough: 4-question interview → `spoke diff` preview card → build → test-drive → hand-off to roster; rubric skill enforcing the one-job bar | phase 1 + 2 | 1 session after access |
-| **2b — Engine spine (thin)** | **wrap, don't rebuild**: spawn wrappers around installed agent CLIs (Claude Code, Codex, Pi, agent-zero — the agentctl pattern: launch, stream lifecycle events, collect results, no control plane) + a unified provider API (pi-ai shape). This IS the "start thin" engine answer — NEST talks to every harness the user already has | repo connected | ~1 session |
+| **2b — Engine spine (thin)** ✅ **PR #4** | **`nest/` crate shipped**: perches wrap installed agent CLIs (claude-code, codex + echo/fail stubs; launch, stream `peep` lifecycle events, collect receipts in the roost, no control plane) + `forage` provider layer (echo stub + any local CLI). `nest` CLI: `perches/agents/hatch/brood/roost/imprint/ask` — the Expert-mode passthrough | repo connected | done |
 | **3 — Sharing** | bots as Spoke packages; link/file import; starter template pack: oncall responder, PR reviewer, wiki keeper, **+ the council bot** (second-opinion capability built on the shipped llm-council skill + fusion-harness/gauntlet-loop patterns: N-way opinions → critic → synthesis) | phase 1 | ~1 session |
 | **4 — Routines** | scheduler + webhooks in-app; `[[automations]]`→`.nest/cron` once format verified; quiet reporting + receipts | phase 2; cron format | 1–2 sessions |
 | **4a — Provider layer (zero-cost)** | local provider proxy with **free-tier failover** (freellmapi/codex-router patterns — honors Bob's cost-policy.md) + **CodexBar-style limit awareness** in the model-tier picker (per-provider reset windows shown when choosing `model:`) | phase 2b | ~1 session |
@@ -366,11 +367,11 @@ learning loop: bot → SKILL.md → `spoke add` self-install → provenance in
 | **B — Debloat (parallel)** | Tier A config (~95–115 MB) + installer fix + packaging audit | private repo's build config | <1 session |
 | **B2 — Debloat tier B** | jimp/otel/reconciler audit + fixes | source read access | <1 session |
 
-**Critical path:** Phase 1 (Spoke schema) ✅ shipped in PR #2; the Boss
-fold ✅ shipped in PR #3. Next executable step is **2b — the engine
-spine** (wrap-don't-rebuild spawn wrappers): it unblocks Phase 2's shell.
-The GUI is now Phase 2, not an afterthought — the noob-first shell IS
-the product.
+**Critical path:** Phase 1 ✅ PR #2; the Boss fold ✅ PR #3; the engine
+spine ✅ PR #4 (`nest/` — perches wrap the CLIs, peeps stream events,
+the roost keeps receipts, the brood dispatches). Next executable step is
+**Phase 2 — the shell**: the one-window noob app over the spine. The GUI
+IS the product.
 
 ---
 
