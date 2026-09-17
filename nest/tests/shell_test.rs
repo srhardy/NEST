@@ -361,3 +361,78 @@ fn perch_install_streams_a_run() {
         thread::sleep(Duration::from_millis(200));
     }
 }
+
+#[test]
+fn remote_inbox_dispatches_and_replies() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let _port = start(&home, t.path());
+    let inbox = home.join("remotes/telegram/inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    std::fs::write(
+        inbox.join("42-1001.md"),
+        "---\nremote: telegram\nchat: 1001\nfrom: steven\n---\n\nhi nest\n",
+    )
+    .unwrap();
+
+    // the watcher picks it up, dispatches to a bot (echo perch prints the
+    // prompt back — the reply file lands in outbox/1001.txt)
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let outbox = home.join("remotes/telegram/outbox/1001.txt");
+    loop {
+        if outbox.exists() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no outbox reply; inbox done dir: {:?}",
+            std::fs::read_dir(inbox.join("done")).map(|d| d.count())
+        );
+        thread::sleep(Duration::from_millis(300));
+    }
+    assert!(
+        inbox.join("done/42-1001.md").exists(),
+        "inbox file not archived"
+    );
+    assert!(std::fs::read_to_string(&outbox)
+        .unwrap()
+        .contains("hi nest"));
+}
+
+#[test]
+fn patrol_file_change_runs_a_routine() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let cwd = t.path().join("work");
+    std::fs::create_dir_all(cwd.join("src")).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("automations.toml"),
+        "[[automation]]\nname = \"src-watch\"\nevent = \"file-change:src/**\"\nprompt = \"look at the tree\"\n",
+    )
+    .unwrap();
+    let _port = start(&home, &cwd);
+
+    // baseline scan happens on first tick — write after it settles
+    thread::sleep(Duration::from_millis(400));
+    std::fs::write(cwd.join("src/new.rs"), "fn n(){}").unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let roost = home.join("roost");
+    loop {
+        let hit = std::fs::read_dir(&roost)
+            .map(|d| {
+                d.flatten().any(|e| {
+                    std::fs::read_to_string(e.path())
+                        .map(|s| s.contains("src-watch"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if hit {
+            break;
+        }
+        assert!(Instant::now() < deadline, "patrol never fired the routine");
+        thread::sleep(Duration::from_millis(500));
+    }
+}

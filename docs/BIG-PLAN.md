@@ -189,6 +189,8 @@ Why this layering wins:
 | First-run onboarding (name your boss, abilities, engine picks) + real 1-click installs | ✅ `devin/eggbot` |
 | Free-first provider router (`providers.toml` → failover, `nest providers`/`ask`) | ✅ `devin/eggbot` |
 | `remotes` package (telegram/slack/watch folder-spool bridges) | ✅ `devin/eggbot` |
+| Remotes watcher + `remotes` package fully closed (inbox→brood→outbox) | ✅ **PR #7** |
+| The patrol — `[[automation]]` routines (cron UTC + file-change) run as real dispatches | ✅ **PR #7** |
 | Desktop chrome (taskbar, desktop birdy, OS notifications) | 🔲 next step — Tauri wrapper over the shell |
 | Access to the private app repo | 🔲 **needs Steven** (see §9) — only for debloat Track B |
 
