@@ -30,6 +30,8 @@ use crate::spec::{self, AgentSpec};
 
 /// The embedded single-page app.
 const INDEX: &str = include_str!("web/index.html");
+/// The desktop-birdy page for the wrapper's float window.
+const BIRDY: &str = include_str!("web/birdy.html");
 
 /// A run in progress (or finished) — the events the page subscribes to.
 struct Run {
@@ -951,6 +953,9 @@ fn route<'a>(
     }
     match (method, path) {
         (&Method::Get, "/") => respond(INDEX.to_string(), "text/html; charset=utf-8", 200),
+        (&Method::Get, "/birdy") => {
+            respond(BIRDY.to_string(), "text/html; charset=utf-8", 200)
+        }
         (&Method::Get, "/api/state") => json_response(shell.state_json()),
         (&Method::Get, "/api/runs") => json_response(shell.runs_json()),
         (&Method::Get, "/api/settings") => {

@@ -61,9 +61,10 @@ Everything Spoke projects, the engine consumes:
   `outbox/<chat|channel>.txt`. The `remotes` package ships stdlib-only
   bridges (telegram / slack / watch) that own the polling side.
 
-Native chrome (taskbar icon, floating desktop birdy, OS notifications)
-arrives with the desktop wrapper — the web shell embeds unchanged inside
-it.
+Native chrome lives in `desktop/` (Tauri): the same shell embedded
+in-process — taskbar icon with a bird menu, close-to-background, a
+floating always-on-top **birdy** mascot (drag to move, click to reopen,
+flaps while bots work), and OS notifications on new receipts.
 
 ## The `nest` CLI (Expert-mode passthrough)
 
