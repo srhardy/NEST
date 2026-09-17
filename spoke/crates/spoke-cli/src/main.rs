@@ -1,0 +1,789 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{anyhow, Context, Result};
+use clap::{Parser, Subcommand};
+
+use spoke_adapters::{find, registry, skill_install_op, Ctx};
+use spoke_core::ir::{Op, Plan};
+use spoke_core::lock::{Lock, LockedPackage};
+use spoke_core::{paths, Manifest};
+use spoke_registry::scan;
+use spoke_registry::Store;
+
+#[derive(Parser)]
+#[command(name = "spoke", version, about = "One hub for every coding agent")]
+struct Cli {
+    /// Home directory to operate on (defaults to $HOME)
+    #[arg(long, global = true)]
+    home: Option<PathBuf>,
+    /// Project directory (defaults to the current directory)
+    #[arg(long, global = true)]
+    project: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Detect harnesses, write agent.toml, prepare the Spoke store
+    Init {
+        /// Overwrite an existing agent.toml
+        #[arg(long)]
+        force: bool,
+    },
+    /// Project the manifest into every enabled harness
+    Sync {
+        /// Show what would change without writing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show what sync would change (same as `sync --dry-run`)
+    Diff,
+    /// Harness detection, capabilities, drift and warnings
+    Doctor,
+    /// Install a package: `spoke add <name-in-index>` or `spoke add <path-to-package-dir>`
+    Add {
+        spec: String,
+        /// Show what would be installed without writing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove an installed package and its skills
+    Remove { name: String },
+    /// List installed packages
+    List,
+    /// Explain a package: source, integrity, skills, installed paths
+    Why { name: String },
+    /// Report overlapping skills between installed packages
+    Dedupe {
+        /// Similarity threshold (0.0 – 1.0)
+        #[arg(long, default_value_t = 0.4)]
+        threshold: f32,
+    },
+    /// Record an event in the Spoke log (called by harness hooks)
+    Event {
+        kind: String,
+        #[arg(long)]
+        detail: Option<String>,
+    },
+    /// Install Spoke's harness hooks (budget accounting); --uninstall removes them
+    Hooks {
+        #[arg(long)]
+        uninstall: bool,
+    },
+    /// Context cost and spend receipts for installed skills
+    Budget {
+        #[arg(long)]
+        receipts: bool,
+    },
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    match run(cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("spoke: {err:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<()> {
+    let home = cli
+        .home
+        .unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default());
+    let project = match cli.project {
+        Some(path) => path,
+        None => std::env::current_dir().context("resolving the current directory")?,
+    };
+
+    match cli.command {
+        Command::Init { force } => init(&home, &project, force),
+        Command::Sync { dry_run } => sync(&home, &project, dry_run),
+        Command::Diff => sync(&home, &project, true),
+        Command::Doctor => doctor(&home, &project),
+        Command::Add { spec, dry_run } => add(&home, &project, &spec, dry_run),
+        Command::Remove { name } => remove(&home, &project, &name),
+        Command::List => list(&project),
+        Command::Why { name } => why(&home, &project, &name),
+        Command::Dedupe { threshold } => dedupe(&home, &project, threshold),
+        Command::Event { kind, detail } => event(&home, &kind, detail.as_deref()),
+        Command::Hooks { uninstall } => hooks(&home, &project, uninstall),
+        Command::Budget { receipts } => budget(&home, &project, receipts),
+    }
+}
+
+fn unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn init(home: &Path, project: &Path, force: bool) -> Result<()> {
+    println!("Spoke init");
+    println!("  project: {}", project.display());
+
+    let detected: Vec<&str> = registry()
+        .iter()
+        .filter(|h| h.detect(home))
+        .map(|h| h.display())
+        .collect();
+    if detected.is_empty() {
+        println!("  harnesses detected: none yet — install Claude Code or Codex first");
+    } else {
+        println!("  harnesses detected: {}", detected.join(", "));
+    }
+
+    let manifest_path = project.join(spoke_core::MANIFEST_FILE);
+    if manifest_path.exists() && !force {
+        println!("  kept existing {}", manifest_path.display());
+    } else {
+        std::fs::write(&manifest_path, Manifest::template())
+            .with_context(|| format!("writing {}", manifest_path.display()))?;
+        println!("  wrote {}", manifest_path.display());
+    }
+
+    let store = paths::spoke_home(home);
+    std::fs::create_dir_all(store.join("backups"))
+        .with_context(|| format!("creating {}", store.display()))?;
+    println!("  store: {}", store.display());
+
+    println!();
+    println!("Next:");
+    println!("  spoke diff     # see exactly what Spoke would change");
+    println!("  spoke sync     # apply it (files are backed up first)");
+    println!("  spoke add <pkg>  # install a skill package");
+    Ok(())
+}
+
+fn sync(home: &Path, project: &Path, dry_run: bool) -> Result<()> {
+    let manifest = Manifest::load(project)?;
+    manifest.validate()?;
+    let ts = unix_secs();
+
+    println!(
+        "Spoke {} — {}",
+        if dry_run { "diff" } else { "sync" },
+        project.display()
+    );
+
+    let mut files_changed = 0usize;
+    let mut files_unchanged = 0usize;
+    let mut warnings = 0usize;
+
+    for id in &manifest.harnesses {
+        let Some(harness) = find(id) else {
+            println!("  ! unknown harness '{id}' in agent.toml — skipped");
+            warnings += 1;
+            continue;
+        };
+        if !harness.detect(home) {
+            println!(
+                "  - {} is enabled but not detected on this machine — skipped",
+                harness.display()
+            );
+            warnings += 1;
+            continue;
+        }
+
+        let ctx = Ctx::new(home, project, &manifest);
+        let plan = harness.plan(&ctx);
+        let changes = if dry_run {
+            spoke_adapters::apply::preview(&plan)?
+        } else {
+            spoke_adapters::apply::apply(&plan, home, project, ts)?
+        };
+
+        let mut by_file: BTreeMap<PathBuf, Vec<&str>> = BTreeMap::new();
+        let mut unchanged = 0usize;
+        for change in &changes {
+            if change.changed {
+                let reasons = by_file.entry(change.path.clone()).or_default();
+                if !reasons.contains(&change.why.as_str()) {
+                    reasons.push(change.why.as_str());
+                }
+            } else {
+                unchanged += 1;
+            }
+        }
+
+        files_changed += by_file.len();
+        files_unchanged += unchanged;
+
+        println!("  {}: {} file(s)", harness.display(), by_file.len());
+        for (path, reasons) in &by_file {
+            println!(
+                "    {} {} — {}",
+                if dry_run { "would update" } else { "updated" },
+                path.display(),
+                reasons.join("; ")
+            );
+        }
+        for warning in &plan.warnings {
+            println!("    note: {warning}");
+            warnings += 1;
+        }
+    }
+
+    println!(
+        "  total: {} file(s) {}, {} operation(s) already in sync, {} warning(s)",
+        files_changed,
+        if dry_run { "would change" } else { "written" },
+        files_unchanged,
+        warnings
+    );
+    if !dry_run && files_changed > 0 {
+        println!("  backups: {}", paths::backups_dir(home, ts).display());
+    }
+    Ok(())
+}
+
+fn doctor(home: &Path, project: &Path) -> Result<()> {
+    println!("Spoke doctor");
+    println!("  project: {}", project.display());
+
+    let manifest_path = project.join(spoke_core::MANIFEST_FILE);
+    let manifest = if manifest_path.exists() {
+        println!("  manifest: present");
+        Some(Manifest::load(project)?)
+    } else {
+        println!("  manifest: missing (run `spoke init`)");
+        None
+    };
+
+    if let Some(manifest) = &manifest {
+        println!("  budget preset: {}", manifest.budget.preset);
+    }
+    let lock = Lock::load(project)?;
+    println!("  packages installed: {}", lock.packages.len());
+    println!();
+
+    for harness in registry() {
+        let detected = harness.detect(home);
+        let enabled = manifest
+            .as_ref()
+            .map(|m| m.enabled(harness.id()))
+            .unwrap_or(false);
+
+        println!("  {} ({})", harness.display(), harness.id());
+        println!(
+            "    detected: {}   enabled: {}   skills root: {}",
+            yes_no(detected),
+            yes_no(enabled),
+            harness.skills_root(home).display()
+        );
+        println!("    capabilities: {}", harness.capabilities().describe());
+
+        if let Some(manifest) = &manifest {
+            if enabled && detected {
+                let ctx = Ctx::new(home, project, manifest);
+                let plan = harness.plan(&ctx);
+                let changes = spoke_adapters::apply::preview(&plan)?;
+                let pending = changes.iter().filter(|c| c.changed).count();
+                println!("    drift: {pending} file(s) would change");
+                for warning in &plan.warnings {
+                    println!("    note: {warning}");
+                }
+            }
+        }
+    }
+
+    println!();
+    println!("  store: {}", paths::spoke_home(home).display());
+    Ok(())
+}
+
+fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
+    let manifest = Manifest::load(project)?;
+    manifest.validate()?;
+
+    let store = Store::new(home);
+    let package = store.resolve(spec)?;
+    package.validate()?;
+
+    println!(
+        "Resolved {}@{} ({})",
+        package.name,
+        package.version,
+        package.license.as_deref().unwrap_or("license unknown")
+    );
+    if !package.description.is_empty() {
+        println!("  {}", package.description);
+    }
+    println!("  source: {}", package.source.describe());
+    if !package.requires.mcp.is_empty() {
+        println!(
+            "  note: requires MCP server(s) {} — not wired yet (Spoke's MCP surface lands in M2+)",
+            package.requires.mcp.join(", ")
+        );
+    }
+
+    let materialized = store.fetch(&package)?;
+    let skills = store.skill_files(&package, &materialized.dir)?;
+
+    let mut total_tokens = 0u64;
+    let mut all_files: Vec<(String, String)> = Vec::new();
+    for (skill, files) in &skills {
+        let report = scan::scan(files);
+        let tokens = spoke_registry::token_estimate(files);
+        total_tokens += tokens;
+        println!(
+            "  skill '{skill}': {} file(s), ~{tokens} tokens (estimate)",
+            files.len()
+        );
+        for warning in &report.warnings {
+            println!("    scan: {warning}");
+        }
+        all_files.extend(files.clone());
+    }
+    let integrity = Store::integrity(&all_files);
+
+    // Overlap check against what is already installed.
+    let existing = installed_skill_texts(project)?;
+    for (skill, files) in &skills {
+        let body = files
+            .iter()
+            .map(|(_, c)| c.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (other_name, other_body) in &existing {
+            if other_name == skill {
+                continue;
+            }
+            let score = scan::similarity(&body, other_body);
+            if score >= 0.4 {
+                println!(
+                    "  overlap: '{skill}' and '{other_name}' are {:.0}% similar",
+                    score * 100.0
+                );
+            }
+        }
+    }
+
+    // Plan the install across every enabled + detected harness.
+    let mut plan = Plan::default();
+    let mut installed_paths: BTreeSet<String> = BTreeSet::new();
+    let mut targets: Vec<String> = Vec::new();
+    for id in &manifest.harnesses {
+        let Some(harness) = find(id) else {
+            println!("  ! unknown harness '{id}' — skipped");
+            continue;
+        };
+        if !harness.detect(home) {
+            println!("  - {} not detected — skipped", harness.display());
+            continue;
+        }
+        targets.push(harness.display().to_string());
+        for (skill, files) in &skills {
+            plan.push(skill_install_op(
+                harness.as_ref(),
+                home,
+                skill,
+                files.clone(),
+                &materialized.source_description,
+            ));
+            installed_paths.insert(
+                harness
+                    .skills_root(home)
+                    .join(skill)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+    }
+
+    if targets.is_empty() {
+        anyhow::bail!("no enabled harness is installed on this machine — nothing to install into");
+    }
+
+    let changes = if dry_run {
+        spoke_adapters::apply::preview(&plan)?
+    } else {
+        spoke_adapters::apply::apply(&plan, home, project, unix_secs())?
+    };
+    let changed = changes.iter().filter(|c| c.changed).count();
+
+    if !dry_run {
+        let mut lock = Lock::load(project)?;
+        lock.upsert(LockedPackage {
+            name: package.name.clone(),
+            source: Some(materialized.source_description.clone()),
+            version: Some(package.version.clone()),
+            license: package.license.clone(),
+            integrity: Some(integrity.clone()),
+            tokens: total_tokens,
+            skills: skills.iter().map(|(name, _)| name.clone()).collect(),
+            installed_paths: installed_paths.iter().cloned().collect(),
+        });
+        lock.save(project)?;
+    }
+
+    println!(
+        "  {} {} skill director(ies) into {} — {}",
+        if dry_run { "would install" } else { "installed" },
+        changed,
+        targets.join(", "),
+        if dry_run {
+            "dry run, nothing written".to_string()
+        } else {
+            format!("lockfile updated ({})", spoke_core::lock::LOCK_FILE)
+        }
+    );
+    if !dry_run && changed > 0 {
+        println!(
+            "  backups: {}",
+            paths::backups_dir(home, unix_secs()).display()
+        );
+    }
+    println!("  integrity: {integrity}");
+    Ok(())
+}
+
+fn remove(home: &Path, project: &Path, name: &str) -> Result<()> {
+    let mut lock = Lock::load(project)?;
+    let package = lock
+        .get(name)
+        .cloned()
+        .ok_or_else(|| anyhow!("package '{name}' is not installed"))?;
+
+    let mut paths: BTreeSet<PathBuf> = package
+        .installed_paths
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    if let Ok(manifest) = Manifest::load(project) {
+        for id in &manifest.harnesses {
+            if let Some(harness) = find(id) {
+                for skill in &package.skills {
+                    paths.insert(harness.skills_root(home).join(skill));
+                }
+            }
+        }
+    }
+
+    let mut plan = Plan::default();
+    for path in &paths {
+        plan.push(Op::DeleteDir {
+            path: path.clone(),
+            why: format!("remove skill directory for '{name}'"),
+        });
+    }
+
+    let changes = spoke_adapters::apply::apply(&plan, home, project, unix_secs())?;
+    let removed = changes.iter().filter(|c| c.changed).count();
+
+    lock.remove(name);
+    lock.save(project)?;
+
+    println!("Removed {name}: {removed} director(ies) moved to backups, lockfile updated");
+    Ok(())
+}
+
+fn list(project: &Path) -> Result<()> {
+    let lock = Lock::load(project)?;
+    if lock.packages.is_empty() {
+        println!("No packages installed (add one with `spoke add <name-or-path>`)");
+        return Ok(());
+    }
+    println!("Installed packages ({}):", lock.packages.len());
+    for package in &lock.packages {
+        println!(
+            "  {}@{}  ~{} tokens  {}  skills: {}",
+            package.name,
+            package.version.as_deref().unwrap_or("?"),
+            package.tokens,
+            package.license.as_deref().unwrap_or("license unknown"),
+            package.skills.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn why(home: &Path, project: &Path, name: &str) -> Result<()> {
+    let lock = Lock::load(project)?;
+    let package = lock
+        .get(name)
+        .ok_or_else(|| anyhow!("package '{name}' is not installed"))?;
+
+    println!("{}@{}", package.name, package.version.as_deref().unwrap_or("?"));
+    println!("  source:    {}", package.source.as_deref().unwrap_or("unknown"));
+    println!("  license:   {}", package.license.as_deref().unwrap_or("unknown"));
+    println!("  tokens:    ~{} (estimate)", package.tokens);
+    println!("  skills:    {}", package.skills.join(", "));
+    for path in &package.installed_paths {
+        let exists = Path::new(path).exists();
+        println!("  installed: {path} {}", if exists { "" } else { "(missing!)" });
+    }
+
+    // Verify the cached package content still matches the recorded integrity.
+    if let (Some(expected), Some(version)) = (&package.integrity, &package.version) {
+        let store = Store::new(home);
+        let cache = store.packages_dir().join(&package.name).join(version);
+        if cache.exists() {
+            let files = spoke_registry::collect_files(&cache)?;
+            let actual = Store::integrity(&files);
+            let verdict = if &actual == expected {
+                "ok".to_string()
+            } else {
+                "DRIFT — cached content no longer matches the lockfile".to_string()
+            };
+            println!("  integrity: {verdict}");
+        }
+    }
+    Ok(())
+}
+
+fn dedupe(home: &Path, project: &Path, threshold: f32) -> Result<()> {
+    let skills = installed_skill_texts(project)?;
+    if skills.len() < 2 {
+        println!("Fewer than two installed skills — nothing to compare");
+        return Ok(());
+    }
+    let pairs = scan::overlaps(&skills, threshold);
+    let _ = home;
+    if pairs.is_empty() {
+        println!(
+            "No overlaps above {:.0}% among {} installed skill(s)",
+            threshold * 100.0,
+            skills.len()
+        );
+        return Ok(());
+    }
+    println!(
+        "Overlapping skills ({} pair(s) above {:.0}%):",
+        pairs.len(),
+        threshold * 100.0
+    );
+    for (a, b, score) in pairs {
+        println!("  {:.0}%  {a}  <->  {b}", score * 100.0);
+    }
+    println!("Consider removing one of each pair: `spoke remove <package>`");
+    Ok(())
+}
+
+/// Text of every installed skill, keyed by skill directory name and deduped
+/// across harnesses (the same skill is installed once per harness).
+fn installed_skill_texts(project: &Path) -> Result<Vec<(String, String)>> {
+    let lock = Lock::load(project)?;
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for package in &lock.packages {
+        for path in &package.installed_paths {
+            let dir = Path::new(path);
+            if !dir.exists() {
+                continue;
+            }
+            let name = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| package.name.clone());
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let files = spoke_registry::collect_files(dir).unwrap_or_default();
+            let body = files
+                .iter()
+                .map(|(_, c)| c.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            out.push((name, body));
+        }
+    }
+    Ok(out)
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn events_path(home: &Path) -> PathBuf {
+    paths::spoke_home(home).join("events.jsonl")
+}
+
+/// Append one event to the Spoke log. Harness hooks call this.
+fn event(home: &Path, kind: &str, detail: Option<&str>) -> Result<()> {
+    use std::io::Write;
+
+    let path = events_path(home);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let record = serde_json::json!({
+        "ts": unix_secs(),
+        "kind": kind,
+        "detail": detail,
+        "cwd": std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()),
+    });
+    let mut line = serde_json::to_string(&record).context("serializing event")?;
+    line.push('\n');
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    file.write_all(line.as_bytes())
+        .with_context(|| format!("appending to {}", path.display()))?;
+    Ok(())
+}
+
+fn read_events(home: &Path) -> Result<Vec<serde_json::Value>> {
+    let path = events_path(home);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    Ok(raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect())
+}
+
+fn hooks(home: &Path, project: &Path, uninstall: bool) -> Result<()> {
+    let manifest = Manifest::load(project)?;
+    let bin = std::env::current_exe()
+        .context("resolving the spoke binary path")?
+        .to_string_lossy()
+        .to_string();
+
+    let mut plan = Plan::default();
+    let mut targets: Vec<String> = Vec::new();
+    let mut unsupported: Vec<String> = Vec::new();
+
+    for id in &manifest.harnesses {
+        let Some(harness) = find(id) else { continue };
+        if !harness.detect(home) {
+            continue;
+        }
+        if harness.id() != "claude-code" {
+            unsupported.push(harness.display().to_string());
+            continue;
+        }
+        targets.push(harness.display().to_string());
+        let settings = project.join(".claude").join("settings.json");
+        for (event_name, kind) in [
+            ("SessionStart", "session_start"),
+            ("SessionEnd", "session_end"),
+            ("PreCompact", "pre_compact"),
+        ] {
+            if uninstall {
+                plan.push(Op::RemoveJsonArrayItems {
+                    path: settings.clone(),
+                    pointer: vec!["hooks".to_string(), event_name.to_string()],
+                    marker: format!("{bin} event"),
+                    why: format!("remove Spoke's {event_name} hook"),
+                });
+            } else {
+                plan.push(Op::MergeJsonArrayAppend {
+                    path: settings.clone(),
+                    pointer: vec!["hooks".to_string(), event_name.to_string()],
+                    value: serde_json::json!([
+                        { "hooks": [ { "type": "command", "command": format!("{bin} event {kind}") } ] }
+                    ]),
+                    why: format!("log {event_name} events for budget accounting"),
+                });
+            }
+        }
+    }
+
+    for name in &unsupported {
+        println!("  note: {name} uses a different hook model — not wired yet");
+    }
+    if targets.is_empty() {
+        println!("No supported harness detected — nothing to do");
+        return Ok(());
+    }
+
+    let changes = spoke_adapters::apply::apply(&plan, home, project, unix_secs())?;
+    let changed = changes.iter().filter(|c| c.changed).count();
+    println!(
+        "{} {} file(s): {}",
+        if uninstall {
+            "Removed Spoke hooks from"
+        } else {
+            "Installed Spoke hooks into"
+        },
+        changed,
+        targets.join(", ")
+    );
+    if changed > 0 {
+        println!("  backups: {}", paths::backups_dir(home, unix_secs()).display());
+    }
+    Ok(())
+}
+
+fn budget(home: &Path, project: &Path, receipts: bool) -> Result<()> {
+    let lock = Lock::load(project)?;
+    let total: u64 = lock.packages.iter().map(|p| p.tokens).sum();
+
+    println!("Spoke budget — {}", project.display());
+    if lock.packages.is_empty() {
+        println!("  no packages installed");
+    } else {
+        println!(
+            "  {} package(s), ~{total} tokens of skill context per session (estimate)",
+            lock.packages.len()
+        );
+        for package in &lock.packages {
+            println!(
+                "    {:<20} ~{:>6} tokens   {}",
+                package.name,
+                package.tokens,
+                package.license.as_deref().unwrap_or("license unknown")
+            );
+        }
+    }
+
+    let skills = installed_skill_texts(project)?;
+    let pairs = scan::overlaps(&skills, 0.4);
+    if !pairs.is_empty() {
+        let mut saving = 0u64;
+        for (a, _, _) in &pairs {
+            saving += lock
+                .packages
+                .iter()
+                .find(|p| &p.name == a)
+                .map(|p| p.tokens)
+                .unwrap_or(0);
+        }
+        println!(
+            "  overlap: {} pair(s); removing one of each would save ~{saving} tokens/session (estimate)",
+            pairs.len()
+        );
+        for (a, b, score) in pairs.iter().take(3) {
+            println!("    {:.0}%  {a} <-> {b}", score * 100.0);
+        }
+    }
+
+    let events = read_events(home)?;
+    let sessions = events
+        .iter()
+        .filter(|e| e.get("kind").and_then(|k| k.as_str()) == Some("session_start"))
+        .count();
+    println!(
+        "  events: {} recorded, {} session(s) started",
+        events.len(),
+        sessions
+    );
+    println!("  log: {}", events_path(home).display());
+
+    if receipts {
+        println!(
+            "  receipts: measurement only so far — context compression and quality benchmarking are not wired yet"
+        );
+        println!("            all token figures are estimates (bytes/4 heuristic)");
+    }
+    Ok(())
+}
