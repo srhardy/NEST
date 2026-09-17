@@ -68,6 +68,16 @@ impl NestDirs {
         files
     }
 
+    /// Automation table candidates — the patrol reads these.
+    pub fn automation_files(&self) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        if let Some(p) = &self.project {
+            files.push(p.join("automations.toml"));
+        }
+        files.push(self.home.join("automations.toml"));
+        files
+    }
+
     /// Where run receipts rest: `<home>/.nest/roost/`... which is
     /// `<home>/roost/` since `home` already ends in `.nest`.
     pub fn roost(&self) -> PathBuf {

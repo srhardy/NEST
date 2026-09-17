@@ -210,6 +210,72 @@ pub fn load_providers(files: &[PathBuf]) -> (Vec<ProviderSpec>, Vec<String>) {
     (providers, warnings)
 }
 
+/// An automation — a prompt on a trigger, from `.nest/automations.toml`
+/// (`[[automation]]` — the Spoke projection).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AutomationSpec {
+    pub name: String,
+    /// 5-field cron expression.
+    #[serde(default)]
+    pub schedule: Option<String>,
+    /// Event trigger — the patrol understands `file-change:<glob>`.
+    #[serde(default)]
+    pub event: Option<String>,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub bot: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Load `[[automation]]` tables — first file wins on name collisions.
+pub fn load_automations(files: &[PathBuf]) -> (Vec<AutomationSpec>, Vec<String>) {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut automations = Vec::new();
+    let mut warnings = Vec::new();
+    for file in files {
+        if !file.is_file() {
+            continue;
+        }
+        let text = match fs::read_to_string(file) {
+            Ok(t) => t,
+            Err(e) => {
+                warnings.push(format!("cannot read {}: {e}", file.display()));
+                continue;
+            }
+        };
+        #[derive(Deserialize)]
+        struct Table {
+            #[serde(default)]
+            automation: Vec<AutomationSpec>,
+        }
+        match toml::from_str::<Table>(&text) {
+            Ok(t) => {
+                for a in t.automation {
+                    if a.enabled && a.schedule.is_some() == a.event.is_some() {
+                        warnings.push(format!(
+                            "automation '{}' in {} needs exactly one of schedule/event",
+                            a.name,
+                            file.display()
+                        ));
+                        continue;
+                    }
+                    if seen.insert(a.name.clone()) {
+                        automations.push(a);
+                    }
+                }
+            }
+            Err(e) => warnings.push(format!("invalid automations file {}: {e}", file.display())),
+        }
+    }
+    (automations, warnings)
+}
+
 /// Load a `[[route]]` table file (`route` key — matches the Spoke projection).
 pub fn load_routes(files: &[PathBuf]) -> Result<Vec<Route>> {
     #[derive(Deserialize)]

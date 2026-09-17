@@ -398,3 +398,41 @@ fn remote_inbox_dispatches_and_replies() {
         .unwrap()
         .contains("hi nest"));
 }
+
+#[test]
+fn patrol_file_change_runs_a_routine() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let cwd = t.path().join("work");
+    std::fs::create_dir_all(cwd.join("src")).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("automations.toml"),
+        "[[automation]]\nname = \"src-watch\"\nevent = \"file-change:src/**\"\nprompt = \"look at the tree\"\n",
+    )
+    .unwrap();
+    let _port = start(&home, &cwd);
+
+    // baseline scan happens on first tick — write after it settles
+    thread::sleep(Duration::from_millis(400));
+    std::fs::write(cwd.join("src/new.rs"), "fn n(){}").unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let roost = home.join("roost");
+    loop {
+        let hit = std::fs::read_dir(&roost)
+            .map(|d| {
+                d.flatten().any(|e| {
+                    std::fs::read_to_string(e.path())
+                        .map(|s| s.contains("src-watch"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if hit {
+            break;
+        }
+        assert!(Instant::now() < deadline, "patrol never fired the routine");
+        thread::sleep(Duration::from_millis(500));
+    }
+}

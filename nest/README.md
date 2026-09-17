@@ -53,6 +53,9 @@ Everything Spoke projects, the engine consumes:
   (`command` or `ollama`); `forage`'s router tries available ones in
   free-first order with failover (`GET /api/state`, `nest providers`,
   `nest ask --provider x`).
+- **Routines** — `automations.toml` schedules (5-field cron, UTC) and
+  `file-change:` watches run as ordinary dispatches via the patrol;
+  armed triggers are listed under settings.
 - **Remotes** — the shell watches `~/.nest/remotes/<name>/inbox/*.md`:
   each file is brood-dispatched and the reply written to
   `outbox/<chat|channel>.txt`. The `remotes` package ships stdlib-only

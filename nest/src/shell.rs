@@ -22,6 +22,7 @@ use tiny_http::{Header, Method, Response, Server, StatusCode};
 use crate::brood::Brood;
 use crate::hatchling::{self, Receipt, Status};
 use crate::home::NestDirs;
+use crate::patrol;
 use crate::peep::Peep;
 use crate::perch;
 use crate::roost;
@@ -164,16 +165,22 @@ pub struct Shell {
     cwd: PathBuf,
     runs: Mutex<HashMap<String, Arc<Run>>>,
     interviews: Mutex<HashMap<u64, Interview>>,
+    /// Scheduled/event automations the patrol is watching.
+    duties: Vec<patrol::Duty>,
+    patrol_warnings: Vec<String>,
     seq: Mutex<u64>,
 }
 
 impl Shell {
     pub fn new(dirs: NestDirs, cwd: PathBuf) -> Self {
+        let (duties, patrol_warnings) = patrol::load_duties(&dirs, &cwd);
         Self {
             dirs,
             cwd,
             runs: Mutex::new(HashMap::new()),
             interviews: Mutex::new(HashMap::new()),
+            duties,
+            patrol_warnings,
             seq: Mutex::new(0),
         }
     }
@@ -329,11 +336,14 @@ impl Shell {
                 })
             })
             .collect();
+        let mut all_warnings = warnings;
+        all_warnings.extend(self.patrol_warnings.iter().cloned());
         json!({
             "agents": agents,
-            "warnings": warnings,
+            "warnings": all_warnings,
             "perches": perch::detected_perches(),
             "providers": crate::forage::Router::from_dirs(&self.dirs).list(),
+            "duties": patrol::describe(&self.duties),
             "onboarding": self.onboarding_needed(),
         })
     }
@@ -791,6 +801,19 @@ pub fn serve(dirs: NestDirs, cwd: PathBuf, port: u16) -> Result<()> {
     {
         let shell = shell.clone();
         thread::spawn(move || remotes_watch(shell));
+    }
+    {
+        let shell = shell.clone();
+        thread::spawn(move || {
+            patrol::run(&shell.duties, |d| {
+                let prompt = format!("[routine '{}'] {}", d.spec.name, d.spec.prompt);
+                match &d.spec.bot {
+                    Some(bot) => shell.start_hatch(bot, &prompt, None).map(|_| ()),
+                    None => shell.start_brood(&prompt, None).map(|_| ()),
+                }
+                .ok();
+            });
+        });
     }
     let addr = format!("127.0.0.1:{port}")
         .to_socket_addrs()?
