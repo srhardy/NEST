@@ -1,15 +1,18 @@
-# NEST environment — Rust toolchain for the spoke workspace (spoke/).
+# NEST environment — Rust toolchain for the spoke workspace (spoke/)
+# and the engine spine (nest/).
 initialize:
   - run: rustup update stable
 maintenance:
   - run: (cd spoke && cargo fetch)
+  - run: (cd nest && cargo fetch)
 knowledge:
   - name: build
     contents: |
-      (cd spoke && cargo build)
+      (cd spoke && cargo build) && (cd nest && cargo build)
   - name: test
     contents: |
-      (cd spoke && cargo test)
+      (cd spoke && cargo test) && (cd nest && cargo test)
   - name: notes
     contents: |
       clap 4.6.x requires edition2024-capable cargo (>=1.85); run `rustup update stable` if cargo fails on that.
+      cargo fmt note: some seed files in spoke/ aren't fmt-clean — run `rustfmt` on the files you changed rather than repo-wide `cargo fmt`.

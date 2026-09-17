@@ -1,0 +1,18 @@
+[package]
+name = "nest"
+version = "0.1.0"
+edition = "2021"
+license = "Unlicense"
+description = "The NEST engine spine — hatches bots by wrapping the agent CLIs you already have."
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+spoke-core = { path = "../spoke/crates/spoke-core" }
+
+[dev-dependencies]
+tempfile = "3"
