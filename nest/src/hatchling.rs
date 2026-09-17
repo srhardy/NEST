@@ -64,6 +64,26 @@ pub struct Receipt {
 
 const TAIL_LINES: usize = 40;
 
+impl Receipt {
+    /// A receipt for a run that never got off the ground — the roost keeps
+    /// spawn failures too, so no attempt vanishes from the activity log.
+    pub fn spawn_failed(agent: &AgentSpec, task: &str, perch: &dyn Perch, error: &str) -> Self {
+        let now = now_ms();
+        Self {
+            id: format!("{}-{}-spawnfail", agent.name, now),
+            agent: agent.name.clone(),
+            perch: perch.name().to_string(),
+            task: task.to_string(),
+            status: Status::SpawnFailed,
+            steps: 0,
+            exit_code: None,
+            started_ms: now,
+            finished_ms: now,
+            tail: vec![error.to_string()],
+        }
+    }
+}
+
 /// Spawn `task` on `perch` as `agent`, in working directory `cwd`.
 pub fn hatch(agent: &AgentSpec, task: &str, perch: &dyn Perch, cwd: &Path) -> Result<Hatchling> {
     let launch = perch.launch(agent, task);
@@ -148,7 +168,7 @@ pub fn wait(
                 _ => on_peep(&peep),
             }
             if let Some(max) = max_steps {
-                if steps > max && !killed_budget {
+                if steps >= max && !killed_budget {
                     killed_budget = true;
                     on_peep(&Peep::BudgetExceeded { steps: max });
                     child.kill().ok();

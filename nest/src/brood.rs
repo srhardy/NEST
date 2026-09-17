@@ -103,7 +103,8 @@ impl Brood {
     }
 
     /// Walk the candidate list: hatch each until one finishes `Done`.
-    /// Returns the winning receipt plus the attempts (the receipt trail).
+    /// Every attempt's receipt is kept (the roost records failures too);
+    /// `winner` is `None` when the whole ladder fails.
     pub fn dispatch(
         &self,
         task: &str,
@@ -119,37 +120,51 @@ impl Brood {
         let mut attempts = Vec::new();
         for target in candidates {
             let agent = &target.agent;
-            let result = hatchling::hatch(agent, task, perch, cwd);
-            let mut h = match result {
-                Ok(h) => h,
+            let receipt = match hatchling::hatch(agent, task, perch, cwd) {
+                Ok(mut h) => hatchling::wait(&mut h, task, perch, agent.max_steps, |peep| {
+                    on_peep(&agent.name, peep)
+                }),
                 Err(e) => {
-                    attempts.push((agent.name.clone(), target.via.clone(), Status::SpawnFailed));
                     on_peep(
                         &agent.name,
                         &Peep::Failed {
                             error: format!("{e:#}"),
                         },
                     );
-                    continue;
+                    Receipt::spawn_failed(agent, task, perch, &format!("{e:#}"))
                 }
             };
-            let receipt = hatchling::wait(&mut h, task, perch, agent.max_steps, |peep| {
-                on_peep(&agent.name, peep)
-            });
             let status = receipt.status;
-            attempts.push((agent.name.clone(), target.via.clone(), status));
+            attempts.push((target.via.clone(), receipt));
             if status == Status::Done {
-                return Ok(Dispatch { receipt, attempts });
+                let winner = attempts.pop().map(|(_, r)| r);
+                return Ok(Dispatch { winner, attempts });
             }
         }
-        bail!("every candidate failed — see attempts")
+        Ok(Dispatch {
+            winner: None,
+            attempts,
+        })
     }
 }
 
-/// The outcome of a brood dispatch: who won, and who was tried.
+/// The outcome of a brood dispatch: the run that finished `Done` (if any)
+/// plus every attempt's receipt — the complete activity trail.
 pub struct Dispatch {
-    pub receipt: Receipt,
-    pub attempts: Vec<(String, Via, Status)>,
+    /// The candidate that succeeded; `None` when the whole ladder failed.
+    pub winner: Option<Receipt>,
+    /// Every attempted run's receipt, in order (excludes the winner).
+    pub attempts: Vec<(Via, Receipt)>,
+}
+
+impl Dispatch {
+    /// All receipts — attempts plus the winner — for recording.
+    pub fn all_receipts(&self) -> impl Iterator<Item = &Receipt> {
+        self.attempts
+            .iter()
+            .map(|(_, r)| r)
+            .chain(self.winner.iter())
+    }
 }
 
 #[cfg(test)]

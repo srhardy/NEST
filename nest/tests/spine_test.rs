@@ -110,7 +110,7 @@ fn step_budget_kills_the_run() {
     });
     assert!(budget_hit);
     assert_eq!(receipt.status, Status::BudgetExceeded);
-    assert!(receipt.steps >= 3);
+    assert!(receipt.steps >= 2);
 }
 
 #[test]
