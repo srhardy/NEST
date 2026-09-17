@@ -366,7 +366,7 @@ fn perch_install_streams_a_run() {
 fn remote_inbox_dispatches_and_replies() {
     let t = tempfile::tempdir().unwrap();
     let home = t.path().join("home");
-    let port = start(&home, t.path());
+    let _port = start(&home, t.path());
     let inbox = home.join("remotes/telegram/inbox");
     std::fs::create_dir_all(&inbox).unwrap();
     std::fs::write(
