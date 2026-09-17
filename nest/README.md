@@ -50,8 +50,12 @@ directory), `--perch` (pick a harness explicitly).
   `--allowedTools`, `deny` → `--disallowedTools`. `ask` can't prompt in a
   headless run, so it joins the deny list — the prompt still states the
   policy in words, and the receipt shows what was unreachable.
-- **`max_steps` is a hard budget.** Step peeps are counted; over budget →
+- **`max_steps` is a hard budget.** Step peeps are counted; at the cap →
   kill → `BudgetExceeded` on the receipt.
+- **Every attempt is a receipt.** Failed ladder runs land in the roost
+  too — the activity log shows the whole fallback trail, not just the
+  winner. The same holds for a `clutch`: a spawn failure lands as a
+  `SpawnFailed` receipt instead of aborting the batch.
 - **Fallback is for failure, not taste.** The brood walks a route's
   fallback chain only when a candidate doesn't finish `Done`.
 

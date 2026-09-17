@@ -45,14 +45,47 @@ pub trait Perch: Sync {
     fn parse(&self, line: &str) -> Option<Peep>;
 }
 
-/// PATH lookup — is `bin` an executable file somewhere on PATH?
+/// PATH lookup — is `bin` an *executable* file somewhere on PATH?
 fn which(bin: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|paths| {
-        env::split_paths(&paths).find_map(|dir| {
-            let candidate = dir.join(bin);
-            candidate.is_file().then_some(candidate)
-        })
+        env::split_paths(&paths)
+            .find_map(|dir| candidates(&dir, bin).into_iter().find(|c| is_executable(c)))
     })
+}
+
+/// What `bin` could be named in `dir`. On Windows a bare name resolves via
+/// `PATHEXT` suffixes (.COM/.EXE/.BAT/.CMD…); elsewhere it's just `bin`.
+fn candidates(dir: &std::path::Path, bin: &str) -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        if std::path::Path::new(bin).extension().is_some() {
+            return vec![dir.join(bin)];
+        }
+        let exts = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        exts.split(';')
+            .filter(|e| !e.is_empty())
+            .map(|e| dir.join(format!("{bin}{e}")))
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        vec![dir.join(bin)]
+    }
+}
+
+#[cfg(unix)]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.is_file()
+        && path
+            .metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &std::path::Path) -> bool {
+    path.is_file()
 }
 
 /// The prompt every perch feeds its harness: persona + tool policy + task.
@@ -316,5 +349,18 @@ mod tests {
         assert!(Echo.detect());
         assert!(perch_named("echo").is_some());
         assert!(perch_named("nope").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn which_requires_an_execute_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("fakecli");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        std::env::set_var("PATH", tmp.path());
+        assert!(which("fakecli").is_none(), "non-exec file must not count");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(which("fakecli").is_some());
     }
 }

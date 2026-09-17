@@ -176,8 +176,13 @@ fn main() -> Result<()> {
                     println!("{line}");
                 }
             })?;
-            let path = roost::record(&dirs.roost(), &dispatch.receipt)?;
-            println!("  receipt: {}", path.display());
+            for receipt in dispatch.all_receipts() {
+                let path = roost::record(&dirs.roost(), receipt)?;
+                println!("  receipt: {}", path.display());
+            }
+            if dispatch.winner.is_none() {
+                bail!("every candidate failed — receipts are in the roost");
+            }
         }
         Cmd::Roost => {
             let (dirs, _) = resolve(&cli)?;
