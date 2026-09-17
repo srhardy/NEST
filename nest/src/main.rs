@@ -80,6 +80,9 @@ enum Cmd {
         /// Skill name (default: derived from the bot + run).
         #[arg(long)]
         name: Option<String>,
+        /// Replace an existing skill of the same name.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -134,7 +137,7 @@ fn run_bot(
     cwd: &std::path::Path,
 ) -> Result<hatchling::Receipt> {
     let perch = pick_perch(cli)?;
-    let mut h = hatchling::hatch(agent, task, perch.as_ref(), cwd)?;
+    let mut h = hatchling::hatch(agent, task, perch.as_ref(), cwd, dirs)?;
     let name = agent.name.clone();
     let receipt = hatchling::wait(&mut h, task, perch.as_ref(), agent.max_steps, |peep| {
         if let Some(line) = peep_line(&name, peep) {
@@ -200,7 +203,7 @@ fn main() -> Result<()> {
             for t in &plan {
                 println!("→ {} ({:?})", t.agent.name, t.via);
             }
-            let dispatch = brood.dispatch(&task, perch.as_ref(), &cwd, |bot, peep| {
+            let dispatch = brood.dispatch(&task, perch.as_ref(), &cwd, &dirs, |bot, peep| {
                 if let Some(line) = peep_line(bot, peep) {
                     println!("{line}");
                 }
@@ -275,9 +278,9 @@ fn main() -> Result<()> {
             let (dirs, cwd) = resolve(&cli)?;
             nest::shell::serve(dirs, cwd, *port)?;
         }
-        Cmd::Feather { run_id, name } => {
+        Cmd::Feather { run_id, name, force } => {
             let (dirs, _) = resolve(&cli)?;
-            let dir = nest::feather::feather(&dirs, run_id, name.as_deref())?;
+            let dir = nest::feather::feather(&dirs, run_id, name.as_deref(), *force)?;
             println!("feathered {}", dir.display());
         }
         Cmd::Daemon => {

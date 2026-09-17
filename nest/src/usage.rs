@@ -112,7 +112,7 @@ impl Lock {
     /// the remove+create_new race still resolves to exactly one winner.
     fn stale(path: &Path) -> bool {
         let Ok(meta) = std::fs::read_to_string(path) else {
-            return false; // unreadable — assume alive, keep spinning
+            return Self::file_age(path) > Self::STALE_MS / 1000;
         };
         match Self::owner_alive(&meta) {
             Some(false) => return true,
@@ -123,8 +123,23 @@ impl Lock {
             .split(',')
             .nth(1)
             .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
+            .unwrap_or_else(|| Self::file_age_anchor(path));
         created > 0 && now().saturating_sub(created) > Self::STALE_MS / 1000
+    }
+
+    /// File age in seconds — the fallback clock when a lock's metadata
+    /// can't be read or parsed (a crash between create and write).
+    fn file_age(path: &Path) -> u64 {
+        path.metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    fn file_age_anchor(path: &Path) -> u64 {
+        now().saturating_sub(Self::file_age(path))
     }
 
     /// Spin briefly: reservations are milliseconds, never seconds.

@@ -20,10 +20,10 @@ use crate::roost;
 /// Find a receipt by id or unique prefix.
 pub fn find_receipt(dirs: &NestDirs, id: &str) -> Result<Receipt> {
     let all = roost::receipts(&dirs.roost())?;
-    let hits: Vec<_> = all
-        .into_iter()
-        .filter(|r| r.id == id || r.id.starts_with(id))
-        .collect();
+    if let Some(exact) = all.iter().find(|r| r.id == id) {
+        return Ok(exact.clone());
+    }
+    let hits: Vec<_> = all.into_iter().filter(|r| r.id.starts_with(id)).collect();
     match hits.len() {
         0 => anyhow::bail!("no run '{id}' in the roost"),
         1 => Ok(hits.into_iter().next().unwrap()),
@@ -59,12 +59,17 @@ Keep it under 40 lines. If the run shows nothing reusable, output a SKILL.md\n\
 explaining what NOT to do. Here is the run:\n\n";
 
 /// Distill a finished run into `<home>/skills/<name>/SKILL.md`.
-/// Returns the skill's directory.
-pub fn feather(dirs: &NestDirs, run_id: &str, name: Option<&str>) -> Result<PathBuf> {
+/// Returns the skill's directory. `force` permits replacing an
+/// existing skill — without it a name collision is a hard error, not
+/// a silent overwrite.
+pub fn feather(dirs: &NestDirs, run_id: &str, name: Option<&str>, force: bool) -> Result<PathBuf> {
     let receipt = find_receipt(dirs, run_id)?;
     let skill_name = name
         .map(slug)
-        .unwrap_or_else(|| slug(&format!("{}-learned-{}", receipt.agent, &receipt.id[..receipt.id.len().min(12)])));
+        .unwrap_or_else(|| {
+            let id_prefix: String = receipt.id.chars().take(12).collect();
+            slug(&format!("{}-learned-{id_prefix}", receipt.agent))
+        });
 
     let prompt = format!(
         "{DISTILL_PROMPT}task: {}\nstatus: {:?}\nsteps: {}\noutput tail:\n{}",
@@ -89,23 +94,36 @@ pub fn feather(dirs: &NestDirs, run_id: &str, name: Option<&str>) -> Result<Path
             .trim()
             .to_string();
     }
-    // provenance goes in the frontmatter — who authored this, from which run
+    // provenance goes in the frontmatter — who authored this, from
+    // which run. `name:` is canonicalized to the skill's directory so
+    // the two identifiers can never disagree.
     let provenance = format!("authored-by: {}\nrun: {}\n", receipt.agent, receipt.id);
     let body = if let Some(rest) = body.strip_prefix("---") {
         if let Some(end) = rest.find("\n---") {
-            format!("---\n{provenance}{}---{}", &rest[..end], &rest[end + 4..])
+            let yaml = rest[..end]
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("name:"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("---\nname: {skill_name}\n{provenance}{yaml}\n---{}", &rest[end + 4..])
         } else {
-            format!("---\n{provenance}---\n{body}")
+            format!("---\nname: {skill_name}\n{provenance}---\n{body}")
         }
     } else {
         format!("---\nname: {skill_name}\n{provenance}---\n\n{body}")
     };
 
     let dir = dirs.home.join("skills").join(&skill_name);
+    let path = dir.join("SKILL.md");
+    if path.exists() && !force {
+        anyhow::bail!("skill '{skill_name}' already exists — pass --force to replace it");
+    }
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("cannot create {}", dir.display()))?;
-    let path = dir.join("SKILL.md");
-    std::fs::write(&path, body).with_context(|| format!("cannot write {}", path.display()))?;
+    // tmp + rename: a feather never half-writes over a live skill
+    let tmp = dir.join("SKILL.md.tmp");
+    std::fs::write(&tmp, body).with_context(|| format!("cannot write {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("cannot install {}", path.display()))?;
     Ok(dir)
 }
 
@@ -134,7 +152,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let dirs = crate::home::NestDirs::resolve(&std::path::Path::new("/"), Some(home.path().to_path_buf()));
         roost::record(&dirs.roost(), &receipt("run-abc123")).unwrap();
-        let dir = feather(&dirs, "run-abc123", Some("docs-sync")).unwrap();
+        let dir = feather(&dirs, "run-abc123", Some("docs-sync"), false).unwrap();
         let body = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
         assert!(body.contains("authored-by: doc-keeper"), "{body}");
         assert!(body.contains("run: run-abc123"), "{body}");
@@ -151,6 +169,17 @@ mod tests {
         assert!(find_receipt(&dirs, "run-aaa").is_ok());
         assert!(find_receipt(&dirs, "run-aa").is_err());
         assert!(find_receipt(&dirs, "nope").is_err());
+    }
+
+    #[test]
+    fn existing_skills_need_force() {
+        let home = tempfile::tempdir().unwrap();
+        let dirs = crate::home::NestDirs::resolve(&std::path::Path::new("/"), Some(home.path().to_path_buf()));
+        roost::record(&dirs.roost(), &receipt("run-abc123")).unwrap();
+        feather(&dirs, "run-abc123", Some("docs-sync"), false).unwrap();
+        // second feather with the same name refuses rather than clobbering
+        assert!(feather(&dirs, "run-abc123", Some("docs-sync"), false).is_err());
+        feather(&dirs, "run-abc123", Some("docs-sync"), true).unwrap();
     }
 
     #[test]

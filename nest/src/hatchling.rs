@@ -86,8 +86,8 @@ impl Receipt {
 }
 
 /// Spawn `task` on `perch` as `agent`, in working directory `cwd`.
-pub fn hatch(agent: &AgentSpec, task: &str, perch: &dyn Perch, cwd: &Path) -> Result<Hatchling> {
-    let launch = perch.launch(agent, task);
+pub fn hatch(agent: &AgentSpec, task: &str, perch: &dyn Perch, cwd: &Path, dirs: &crate::home::NestDirs) -> Result<Hatchling> {
+    let launch = perch.launch(agent, task, dirs);
     let mut cmd = Command::new(&launch.program);
     cmd.args(&launch.args)
         .envs(&launch.env)
