@@ -1,0 +1,23 @@
+# NEST environment — Rust toolchain for the spoke workspace (spoke/)
+# and the engine spine (nest/). GTK/WebKit headers let the Tauri
+# desktop wrapper (desktop/) build.
+initialize:
+  - run: rustup update stable
+  - run: sudo -n apt-get install -y pkg-config libwebkit2gtk-4.1-dev libappindicator3-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev
+maintenance:
+  - run: (cd spoke && cargo fetch)
+  - run: (cd nest && cargo fetch)
+  - run: (cd desktop && cargo fetch)
+knowledge:
+  - name: build
+    contents: |
+      (cd spoke && cargo build) && (cd nest && cargo build)
+      desktop/: (cd desktop && cargo build) — needs the GTK deps from initialize; running the binary needs a display (DISPLAY=:0).
+  - name: test
+    contents: |
+      (cd spoke && cargo test) && (cd nest && cargo test)
+  - name: notes
+    contents: |
+      clap 4.6.x requires edition2024-capable cargo (>=1.85); run `rustup update stable` if cargo fails on that.
+      cargo fmt note: some seed files in spoke/ aren't fmt-clean — run `rustfmt` on the files you changed rather than repo-wide `cargo fmt`.
+      Tauri ACL note: app commands invoked from a remote-URL webview need AppManifest::commands in build.rs + an allow-<cmd> permission in the capability + remote.urls covering the origin — see desktop/build.rs and desktop/capabilities/default.json.
