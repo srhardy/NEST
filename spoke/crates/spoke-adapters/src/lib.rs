@@ -49,6 +49,11 @@ pub trait Harness {
     fn skills_root(&self, home: &Path) -> PathBuf {
         self.root(home).join("skills")
     }
+    /// Where this harness loads agents from (agent .md directories),
+    /// e.g. `~/.nest/agents` for packages that ship bot definitions.
+    fn agents_root(&self, home: &Path) -> PathBuf {
+        self.root(home).join("agents")
+    }
     fn plan(&self, ctx: &Ctx<'_>) -> Plan;
 }
 
@@ -73,6 +78,22 @@ pub fn skill_remove_op(harness: &dyn Harness, home: &Path, skill: &str) -> Op {
     Op::DeleteDir {
         path: harness.skills_root(home).join(skill),
         why: format!("remove skill '{skill}'"),
+    }
+}
+
+/// Install an agent directory (bot definition files) into a harness's agents root.
+pub fn agent_install_op(
+    harness: &dyn Harness,
+    home: &Path,
+    agent: &str,
+    files: Vec<(String, String)>,
+    source: &str,
+) -> Op {
+    Op::WriteFiles {
+        root: harness.agents_root(home),
+        name: agent.to_string(),
+        files,
+        why: format!("install agent '{agent}' from {source}"),
     }
 }
 

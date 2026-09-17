@@ -39,6 +39,9 @@ pub struct LockedPackage {
     /// Skill names installed by this package.
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Agent (bot) names installed by this package.
+    #[serde(default)]
+    pub agents: Vec<String>,
     /// Absolute paths Spoke wrote for this package (one entry per harness per skill).
     #[serde(default)]
     pub installed_paths: Vec<String>,
@@ -50,10 +53,10 @@ impl Lock {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let raw =
-            std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        let lock = serde_json::from_str(&raw)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let raw = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let lock =
+            serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
         Ok(lock)
     }
 

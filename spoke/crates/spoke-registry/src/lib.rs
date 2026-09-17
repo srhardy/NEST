@@ -88,11 +88,9 @@ impl Store {
             .join(&manifest.name)
             .join(&manifest.version);
         if dest.exists() {
-            fs::remove_dir_all(&dest)
-                .with_context(|| format!("clearing {}", dest.display()))?;
+            fs::remove_dir_all(&dest).with_context(|| format!("clearing {}", dest.display()))?;
         }
-        fs::create_dir_all(&dest)
-            .with_context(|| format!("creating {}", dest.display()))?;
+        fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
 
         match (&manifest.source.path, &manifest.source.git) {
             (Some(path), _) => {
@@ -157,6 +155,42 @@ impl Store {
         Ok(out)
     }
 
+    /// (agent name, files) for every agent the package declares. An agent's
+    /// path may be a directory (collected recursively) or a single .md file.
+    pub fn agent_files(
+        &self,
+        manifest: &PackageManifest,
+        source_dir: &Path,
+    ) -> Result<Vec<(String, Vec<(String, String)>)>> {
+        let mut out = Vec::new();
+        for spec in &manifest.agents {
+            let path = source_dir.join(&spec.path);
+            if !path.exists() {
+                bail!(
+                    "agent '{}' path does not exist in the package source: {}",
+                    spec.name,
+                    path.display()
+                );
+            }
+            let files = if path.is_dir() {
+                collect_files(&path)?
+            } else {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| format!("{}.md", spec.name));
+                let contents = fs::read_to_string(&path)
+                    .with_context(|| format!("reading {}", path.display()))?;
+                vec![(name, contents)]
+            };
+            if files.is_empty() {
+                bail!("agent '{}' has no files at {}", spec.name, path.display());
+            }
+            out.push((spec.name.clone(), files));
+        }
+        Ok(out)
+    }
+
     /// Deterministic content hash over (relative path, contents) pairs.
     pub fn integrity(files: &[(String, String)]) -> String {
         let mut sorted: Vec<&(String, String)> = files.iter().collect();
@@ -183,8 +217,7 @@ pub fn collect_files(root: &Path) -> Result<Vec<(String, String)>> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let entries = fs::read_dir(&dir)
-            .with_context(|| format!("reading {}", dir.display()))?;
+        let entries = fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?;
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
