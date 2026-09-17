@@ -225,6 +225,11 @@ impl Duty {
         }
     }
 
+    /// Manual firing stamps the duty so its "last fired" is honest.
+    pub fn stamp(&self, now: u64) {
+        self.last_fired.store(now, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// For the UI: what kind of trigger this is waiting on.
     pub fn kind(&self) -> String {
         match &self.trigger {
