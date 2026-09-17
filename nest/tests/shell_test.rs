@@ -361,3 +361,40 @@ fn perch_install_streams_a_run() {
         thread::sleep(Duration::from_millis(200));
     }
 }
+
+#[test]
+fn remote_inbox_dispatches_and_replies() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let port = start(&home, t.path());
+    let inbox = home.join("remotes/telegram/inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    std::fs::write(
+        inbox.join("42-1001.md"),
+        "---\nremote: telegram\nchat: 1001\nfrom: steven\n---\n\nhi nest\n",
+    )
+    .unwrap();
+
+    // the watcher picks it up, dispatches to a bot (echo perch prints the
+    // prompt back — the reply file lands in outbox/1001.txt)
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let outbox = home.join("remotes/telegram/outbox/1001.txt");
+    loop {
+        if outbox.exists() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no outbox reply; inbox done dir: {:?}",
+            std::fs::read_dir(inbox.join("done")).map(|d| d.count())
+        );
+        thread::sleep(Duration::from_millis(300));
+    }
+    assert!(
+        inbox.join("done/42-1001.md").exists(),
+        "inbox file not archived"
+    );
+    assert!(std::fs::read_to_string(&outbox)
+        .unwrap()
+        .contains("hi nest"));
+}

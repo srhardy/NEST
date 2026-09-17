@@ -704,10 +704,94 @@ impl Shell {
     }
 }
 
+/// The remotes loop: every remote bridge drops task files into
+/// `~/.nest/remotes/<name>/inbox/`; we dispatch each through the brood
+/// and write the answer back to that remote's outbox. The bridges stay
+/// dumb — all the thinking happens here.
+fn remotes_watch(shell: Arc<Shell>) {
+    let remotes = shell.dirs.home.join("remotes");
+    loop {
+        let Ok(entries) = std::fs::read_dir(&remotes) else {
+            thread::sleep(Duration::from_secs(5));
+            continue;
+        };
+        for remote in entries.filter_map(|e| e.ok()) {
+            let inbox = remote.path().join("inbox");
+            let Ok(tasks) = std::fs::read_dir(&inbox) else {
+                continue;
+            };
+            for task in tasks.filter_map(|e| e.ok()) {
+                let path = task.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                    continue;
+                }
+                let Ok(body) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                // where does the reply go? the bridge's frontmatter says
+                // (telegram: chat: <id>, slack: channel: <id>)
+                let reply_to = body
+                    .lines()
+                    .find(|l| l.starts_with("chat:") || l.starts_with("channel:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .map(|s| s.trim().to_string());
+                let remote_name = remote.file_name().to_string_lossy().to_string();
+                let prompt = format!(
+                    "A message arrived on the {remote_name} remote. Reply to it \
+                     helpfully and briefly — your whole reply is sent back.\n\n{body}"
+                );
+                if let Ok(id) = shell.start_brood(&prompt, None) {
+                    // wait for the run, then answer in the outbox
+                    let (shell2, outbox) = (shell.clone(), remote.path().join("outbox"));
+                    let reply_to2 = reply_to.clone();
+                    thread::spawn(move || {
+                        for _ in 0..1200 {
+                            let done = shell2
+                                .runs
+                                .lock()
+                                .unwrap()
+                                .get(&id)
+                                .map(|r| r.done.load(Ordering::SeqCst))
+                                .unwrap_or(true);
+                            if done {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(250));
+                        }
+                        let answer = shell2
+                            .runs
+                            .lock()
+                            .unwrap()
+                            .get(&id)
+                            .and_then(|r| r.receipt.lock().unwrap().clone())
+                            .map(|r| r.tail.join("\n"))
+                            .unwrap_or_else(|| "(the nest had nothing to say)".into());
+                        if let Some(to) = reply_to2 {
+                            std::fs::create_dir_all(&outbox).ok();
+                            std::fs::write(outbox.join(format!("{to}.txt")), answer).ok();
+                        }
+                    });
+                }
+                // handled either way — move it to done/ so it isn't re-read
+                let done_dir = inbox.join("done");
+                std::fs::create_dir_all(&done_dir).ok();
+                if let Some(name) = path.file_name() {
+                    std::fs::rename(&path, done_dir.join(name)).ok();
+                }
+            }
+        }
+        thread::sleep(Duration::from_secs(3));
+    }
+}
+
 /// Serve the shell until killed.
 pub fn serve(dirs: NestDirs, cwd: PathBuf, port: u16) -> Result<()> {
     let shell = Arc::new(Shell::new(dirs, cwd));
     shell.ensure_eggbot();
+    {
+        let shell = shell.clone();
+        thread::spawn(move || remotes_watch(shell));
+    }
     let addr = format!("127.0.0.1:{port}")
         .to_socket_addrs()?
         .next()
