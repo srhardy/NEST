@@ -9,6 +9,7 @@ import os
 import json
 import math
 from datetime import datetime
+from xml.sax.saxutils import escape as _xml_escape
 
 try:
     from reportlab.lib.pagesizes import letter
@@ -203,8 +204,21 @@ def get_styles():
 # ---------------------------------------------------------------------------
 # PDF Builder
 # ---------------------------------------------------------------------------
+def _escape_tree(value):
+    """XML-escape every string in the report data so generated contract
+    text can't break (or inject) ReportLab paragraph markup."""
+    if isinstance(value, str):
+        return _xml_escape(value)
+    if isinstance(value, list):
+        return [_escape_tree(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _escape_tree(v) for k, v in value.items()}
+    return value
+
+
 def build_pdf(data, output_path):
     """Build the PDF report from structured data."""
+    data = _escape_tree(data)
     styles = get_styles()
     doc = SimpleDocTemplate(
         output_path, pagesize=letter,

@@ -3,7 +3,8 @@
 # desktop wrapper (desktop/) build.
 initialize:
   - run: rustup update stable
-  - run: sudo -n apt-get install -y pkg-config libwebkit2gtk-4.1-dev libappindicator3-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev
+  - run: sudo -n apt-get install -y pkg-config libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev
+  - run: sudo -n apt-get install -y libayatana-appindicator3-dev || sudo -n apt-get install -y libappindicator3-dev
 maintenance:
   - run: (cd spoke && cargo fetch)
   - run: (cd nest && cargo fetch)

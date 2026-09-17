@@ -404,8 +404,8 @@ fn nest_projection_renders_boss_routing_services_and_permissions() {
     assert!(dbg.contains("mode: subagent"));
     assert!(dbg.contains("max_steps: 30"));
     assert!(dbg.contains("permissions:"));
-    assert!(dbg.contains("  bash: ask"));
-    assert!(dbg.contains("  read: allow"));
+    assert!(dbg.contains("  \"bash\": ask"));
+    assert!(dbg.contains("  \"read\": allow"));
 
     let routing = fs::read_to_string(project.path().join(".nest/routing.toml")).expect("read");
     assert!(routing.contains("[[route]]"));
