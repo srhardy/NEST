@@ -1,0 +1,15 @@
+[package]
+name = "nest-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "NEST desktop — taskbar, birdy, notifications over the local shell"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+nest = { path = "../nest" }
+tauri = { version = "2", features = ["tray-icon"] }
+notify-rust = "4"
+serde_json = "1"
+anyhow = "1"
