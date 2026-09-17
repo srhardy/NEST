@@ -44,7 +44,7 @@ enum Command {
     Diff,
     /// Harness detection, capabilities, drift and warnings
     Doctor,
-    /// Install a package: `spoke add <name-in-index>` or `spoke add <path-to-package-dir>`
+    /// Install a package: name-in-index, package dir/path, .md bot file, or https?:// / file:// URL
     Add {
         spec: String,
         /// Show what would be installed without writing anything
@@ -335,12 +335,87 @@ fn doctor(home: &Path, project: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Turn a spec into something `Store::resolve` can read:
+/// an `https?://` or `file://` URL is fetched to disk first, and a bare
+/// `.md` file (fetched or local) is wrapped as a one-bot package.
+fn materialize_spec(home: &Path, spec: &str) -> Result<PathBuf> {
+    let path = if spec.starts_with("http://") || spec.starts_with("https://") {
+        fetch_url(home, spec)?
+    } else if let Some(rest) = spec.strip_prefix("file://") {
+        PathBuf::from(rest)
+    } else {
+        PathBuf::from(spec)
+    };
+    if path.extension().is_some_and(|e| e == "md") && path.is_file() {
+        return wrap_md_as_package(home, &path);
+    }
+    Ok(path)
+}
+
+/// `curl` the URL into the Spoke tmp dir — curl is on every machine
+/// NEST targets, and it keeps this crate dependency-free.
+fn fetch_url(home: &Path, url: &str) -> Result<PathBuf> {
+    let name = url
+        .rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty())
+        .unwrap_or("download")
+        .split('?')
+        .next()
+        .unwrap_or("download");
+    let dir = paths::spoke_home(home).join("tmp");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let dest = dir.join(name);
+    let status = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "30", url, "-o"])
+        .arg(&dest)
+        .status()
+        .context("curl is required for `spoke add <url>`")?;
+    if !status.success() {
+        anyhow::bail!("fetching {url} failed (curl exit {status})");
+    }
+    Ok(dest)
+}
+
+/// A lone `.md` bot file installs as a one-agent package — the name
+/// comes from frontmatter if present, else the filename.
+fn wrap_md_as_package(home: &Path, file: &Path) -> Result<PathBuf> {
+    let body = std::fs::read_to_string(file)
+        .with_context(|| format!("reading {}", file.display()))?;
+    let name = body
+        .lines()
+        .skip_while(|l| *l != "---")
+        .skip(1)
+        .take_while(|l| *l != "---")
+        .find_map(|l| l.strip_prefix("name:").map(|n| n.trim().to_string()))
+        .unwrap_or_else(|| {
+            file.file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+    let dir = paths::spoke_home(home).join("tmp").join(format!("{name}-pkg"));
+    let agents = dir.join("agents");
+    std::fs::create_dir_all(&agents).with_context(|| format!("creating {}", agents.display()))?;
+    std::fs::copy(file, agents.join(format!("{name}.md")))
+        .with_context(|| format!("copying {}", file.display()))?;
+    std::fs::write(
+        dir.join("package.toml"),
+        format!(
+            "name = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"imported from {}\"\ntier = \"imported\"\n\n[source]\npath = \".\"\n\n[[agents]]\nname = \"{name}\"\npath = \"agents/{name}.md\"\n",
+            file.display()
+        ),
+    )?;
+    Ok(dir)
+}
+
 fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
     let manifest = Manifest::load(project)?;
     manifest.validate()?;
 
     let store = Store::new(home);
-    let package = store.resolve(spec)?;
+    let spec_path = materialize_spec(home, spec)?;
+    let package = store.resolve(&spec_path.to_string_lossy())?;
     package.validate()?;
 
     println!(
