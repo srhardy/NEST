@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="multi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEST</title>
+<style>
+  /* ---- themes: three dark presets on black, white bird imagery ---- */
+  :root { --bird:#fff; --bg:#000; --card:#0a0a0a; --edge:#1c1c1c; --dim:#666; }
+  [data-theme="fluro"] { --fg:#3aff8a; --text:#7dffb0; --accent:#00e5ff; --hi:#d7ffe8; --pop:#00e5ff; --glow:0 0 6px rgba(58,255,138,.7); }
+  [data-theme="mono"]  { --fg:#ffffff; --text:#cfcfcf; --accent:#ffffff; --hi:#ffffff; --pop:#ffffff; --glow:none; }
+  [data-theme="multi"] { --fg:#f4f4f4; --text:#d9d9d9; --accent:#b98bff; --hi:#ffffff; --pop:#22d3ee; --glow:0 0 6px rgba(185,139,255,.6); }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--text); font:14px/1.5 ui-monospace,Menlo,monospace; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  h1,h2,h3 { color:var(--hi); font-weight:600; }
+
+  header { display:flex; align-items:center; gap:14px; padding:8px 16px; border-bottom:1px solid var(--edge); }
+  header .logo { font-size:20px; font-weight:700; color:var(--hi); letter-spacing:2px; display:flex; align-items:center; gap:8px; }
+  .spacer { flex:1; }
+  .pill { background:var(--card); border:1px solid var(--edge); color:var(--fg); border-radius:20px; padding:4px 12px; cursor:pointer; font:inherit; font-size:12px; }
+  .pill:hover { border-color:var(--accent); }
+  select.pill { appearance:none; }
+
+  main { flex:1; display:flex; min-height:0; }
+
+  /* ---- roster ---- */
+  aside { width:230px; border-right:1px solid var(--edge); display:flex; flex-direction:column; }
+  aside h2 { padding:10px 14px 4px; font-size:11px; letter-spacing:2px; color:var(--dim); }
+  .roster { flex:1; overflow-y:auto; padding:6px; }
+  .bot { display:flex; align-items:center; gap:10px; padding:8px; border-radius:10px; cursor:pointer; border:1px solid transparent; }
+  .bot:hover, .bot.active { background:var(--card); border-color:var(--b,var(--edge)); }
+  .bot .nm { color:var(--hi); font-weight:600; }
+  .bot .jb { font-size:11px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:130px; }
+  .bot .dot { margin-left:auto; width:8px; height:8px; border-radius:50%; }
+  .st-working .dot { background:#34d399; box-shadow:0 0 6px #34d399; }
+  .st-idle .dot { background:#555; }
+  .st-done .dot { background:#38bdf8; }
+  .st-stuck .dot { background:#f87171; box-shadow:0 0 6px #f87171; }
+  .st-waiting .dot { background:#fbbf24; box-shadow:0 0 6px #fbbf24; animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity:.4 } }
+
+  .addbot { margin:8px; }
+  .addbot button { width:100%; padding:9px; border-radius:10px; border:1px dashed var(--edge); background:none; color:var(--fg); font:inherit; cursor:pointer; }
+  .addbot button:hover { border-color:var(--accent); }
+
+  /* ---- animated bird ---- */
+  .bwrap { position:relative; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .bird { width:38px; height:38px; display:inline-block; flex-shrink:0; }
+  .msg .bird, .toast .bird { width:30px; height:30px; }
+  .bird svg { width:100%; height:100%; overflow:visible; }
+  .bird .body { fill:var(--bird); }
+  .bird .face { fill:#111; }
+  .bird .eye { fill:var(--bird); animation:blink 4s infinite; }
+  .bird .wing { fill:var(--bird); transform-origin:30% 60%; }
+  .bird .beak { fill:var(--b,var(--accent)); }
+  .bird .crest { fill:var(--b,var(--accent)); }
+  @keyframes blink { 0%,92%,100% { transform:scaleY(1) } 95% { transform:scaleY(.1) } }
+  @keyframes bob { 50% { transform:translateY(-3px) } }
+  @keyframes flap { 0%,100% { transform:rotate(0) } 50% { transform:rotate(-22deg) } }
+  @keyframes tilt { 0%,100% { transform:rotate(-8deg) } 50% { transform:rotate(8deg) } }
+  @keyframes zzz { 0% { opacity:0; transform:translate(0,0) } 30% { opacity:1 } 100% { opacity:0; transform:translate(6px,-10px) } }
+  .st-idle .bird { animation:bob 3s ease-in-out infinite; }
+  .st-working .bird { animation:bob .8s ease-in-out infinite; }
+  .st-working .bird .wing { animation:flap .6s infinite; }
+  .st-waiting .bird { animation:tilt 1.2s infinite; }
+  .st-stuck .bird { animation:tilt 2.4s infinite; filter:drop-shadow(0 0 4px #f87171); }
+  .st-done .bird { animation:bob 2s ease-in-out infinite; }
+  .zzz { position:absolute; color:var(--dim); font-size:10px; animation:zzz 2.6s infinite; pointer-events:none; }
+  .bwrap { position:relative; }
+
+  /* ---- tabs + panes ---- */
+  section { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .tabs { display:flex; gap:4px; padding:8px 12px 0; border-bottom:1px solid var(--edge); }
+  .tab { padding:6px 16px; border:1px solid var(--edge); border-bottom:none; border-radius:10px 10px 0 0; background:none; color:var(--dim); font:inherit; cursor:pointer; }
+  .tab.active { color:var(--hi); border-color:var(--t,var(--accent)); background:var(--card); }
+  .pane { flex:1; display:none; flex-direction:column; min-height:0; }
+  .pane.active { display:flex; }
+
+  /* ---- chat ---- */
+  .chatlog { flex:1; overflow-y:auto; padding:18px 22px; display:flex; flex-direction:column; gap:14px; }
+  .msg { max-width:72%; display:flex; gap:10px; align-items:flex-start; }
+  .msg .bub { border:1px solid var(--edge); border-radius:12px; padding:10px 14px; background:var(--card); }
+  .msg.bot .bub { border-color:var(--b,var(--edge)); color:var(--text); }
+  .msg.me { align-self:flex-end; }
+  .msg.me .bub { border-color:var(--accent); color:var(--hi); }
+  .who { font-size:11px; color:var(--b,var(--dim)); margin-bottom:3px; }
+  .loop { display:flex; gap:6px; flex-wrap:wrap; padding:4px 0; }
+  .loop .lp { font-size:11px; padding:2px 8px; border-radius:12px; border:1px solid var(--edge); color:var(--dim); }
+  .lp.step { color:var(--accent); }
+  .lp.fail { color:#f87171; border-color:#f87171; }
+  .lp.done { color:#34d399; border-color:#34d399; }
+  .thinking .bub { border-style:dashed; }
+  .chatin { display:flex; gap:10px; padding:12px 16px; border-top:1px solid var(--edge); }
+  .chatin input { flex:1; background:var(--card); border:1px solid var(--edge); border-radius:10px; padding:10px 14px; color:var(--hi); font:inherit; }
+  .chatin button { padding:0 18px; border-radius:10px; border:1px solid var(--accent); background:none; color:var(--fg); font:inherit; cursor:pointer; }
+  .chatin button:hover { box-shadow:var(--glow); }
+
+  /* ---- activity / settings / onboard ---- */
+  .scroll { flex:1; overflow-y:auto; padding:20px 26px; }
+  table.runs { width:100%; border-collapse:collapse; }
+  table.runs td, table.runs th { padding:7px 10px; border-bottom:1px solid var(--edge); text-align:left; font-size:12px; }
+  table.runs th { color:var(--dim); font-weight:400; letter-spacing:1px; }
+  .tag { padding:1px 8px; border-radius:10px; border:1px solid var(--edge); font-size:11px; }
+  .tag.done { color:#34d399; border-color:#34d399; }
+  .tag.failed, .tag.spawn_failed, .tag.budget_exceeded { color:#f87171; border-color:#f87171; }
+
+  .engines { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:14px; margin:18px 0; }
+  .engine { background:var(--card); border:1px solid var(--edge); border-radius:14px; padding:16px; text-align:center; }
+  .engine.installed { border-color:var(--accent); }
+  .engine .en { color:var(--hi); font-weight:600; margin:8px 0 4px; }
+  .engine .ins { margin-top:10px; display:inline-block; padding:4px 14px; border-radius:14px; border:1px solid var(--edge); color:var(--dim); font-size:11px; }
+  .engine.installed .ins { color:#34d399; border-color:#34d399; }
+  .toggles div { display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--edge); }
+  .switch { width:40px; height:20px; border-radius:10px; border:1px solid var(--accent); position:relative; }
+  .switch::after { content:""; position:absolute; right:2px; top:2px; width:14px; height:14px; border-radius:50%; background:var(--accent); }
+
+  textarea#settings-md { width:100%; min-height:280px; background:var(--card); border:1px solid var(--edge); border-radius:10px; color:var(--text); font:inherit; padding:12px; resize:vertical; }
+
+  /* ---- toasts ---- */
+  #toasts { position:fixed; top:16px; right:16px; display:flex; flex-direction:column; gap:10px; z-index:9; }
+  .toast { display:flex; gap:10px; align-items:center; background:var(--card); border:1px solid var(--pop); border-radius:14px; padding:10px 16px; color:var(--text); box-shadow:var(--glow); animation:pop .3s; }
+  @keyframes pop { from { transform:translateX(30px); opacity:0 } }
+
+  footer { padding:7px 16px; border-top:1px solid var(--edge); color:var(--dim); font-size:12px; display:flex; gap:18px; }
+
+  /* multi theme: each bot owns a colour */
+  [data-theme="multi"] .bot:nth-child(1), [data-theme="multi"] .tab.tab-bot:nth-of-type(1) { --b:#b98bff; }
+  [data-theme="multi"] .bot:nth-child(2) { --b:#fb923c; }
+  [data-theme="multi"] .bot:nth-child(3) { --b:#38bdf8; }
+  [data-theme="multi"] .bot:nth-child(4) { --b:#f472b6; }
+  [data-theme="multi"] .bot:nth-child(5) { --b:#2dd4bf; }
+  [data-theme="multi"] .bot:nth-child(6) { --b:#a3e635; }
+  [data-theme="multi"] .bot:nth-child(7) { --b:#facc15; }
+  [data-theme="multi"] .bot:nth-child(8) { --b:#f87171; }
+  [data-theme="fluro"] .bot, [data-theme="fluro"] .tab { --b:#3aff8a; }
+  [data-theme="mono"] .bot, [data-theme="mono"] .tab { --b:#888; }
+
+  .empty { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; color:var(--dim); text-align:center; padding:30px; }
+  .empty .bird { width:90px; height:90px; animation:bob 2s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><span class="bird" style="width:26px;height:26px"><svg viewBox="0 0 48 48"><ellipse class="body" cx="24" cy="28" rx="16" ry="15"/><ellipse class="face" cx="24" cy="26" rx="9" ry="7"/><circle class="eye" cx="21" cy="25" r="2"/><circle class="eye" cx="27" cy="25" r="2"/><polygon class="beak" points="24,29 20,33 28,33"/><polygon class="crest" points="22,10 24,4 26,10"/></svg></span>NEST</div>
+  <span class="pill" id="mode">guided</span>
+  <div class="spacer"></div>
+  <select class="pill" id="theme">
+    <option value="multi">theme: multi</option>
+    <option value="fluro">theme: fluro</option>
+    <option value="mono">theme: white/grey</option>
+  </select>
+</header>
+
+<main>
+  <aside>
+    <h2>ROSTER</h2>
+    <div class="roster" id="roster"></div>
+    <div class="addbot"><button id="addbot">+ bot (eggbot)</button></div>
+  </aside>
+  <section>
+    <div class="tabs" id="tabs"></div>
+    <div class="pane active" id="pane-chat">
+      <div class="chatlog" id="chatlog"></div>
+      <div class="loop" id="loop" style="padding:4px 22px"></div>
+      <div class="chatin">
+        <input id="task" placeholder="tell the nest what to do — the brood picks the right bot" autocomplete="off" aria-label="task">
+        <button id="send">send</button>
+      </div>
+    </div>
+    <div class="pane" id="pane-activity">
+      <div class="scroll">
+        <h3 style="margin-bottom:12px">the roost — every run leaves a receipt</h3>
+        <table class="runs"><thead><tr><th>run</th><th>bot</th><th>status</th><th>steps</th><th>secs</th></tr></thead><tbody id="runs"></tbody></table>
+      </div>
+    </div>
+    <div class="pane" id="pane-interview">
+      <div class="scroll" style="display:flex;gap:24px">
+        <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+          <div class="chatlog" id="iv-log" style="padding:6px 0"></div>
+          <div class="chatin" style="border-top:none;padding-left:0">
+            <input id="iv-input" placeholder="answer eggbot…" autocomplete="off">
+            <button id="iv-send">answer</button>
+          </div>
+        </div>
+        <div style="width:320px;flex-shrink:0">
+          <h3>preview — the file it writes</h3>
+          <pre id="iv-draft" style="margin-top:10px;background:var(--card);border:1px solid var(--edge);border-radius:12px;padding:14px;color:var(--text);font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap"></pre>
+          <button class="pill" id="iv-build" style="display:none;margin-top:10px;padding:8px 18px">🐣 build it</button>
+        </div>
+      </div>
+    </div>
+    <div class="pane" id="pane-settings">
+      <div class="scroll">
+        <h3>settings — backed by <span id="settings-path" style="color:var(--dim)"></span></h3>
+        <p style="color:var(--dim);margin:6px 0 12px">everything here is a plain file — edit it in the GUI or by hand; they stay the same truth.</p>
+        <h3 style="margin-top:18px">engines — what powers your bots</h3>
+        <p style="color:var(--dim);margin:4px 0 0">detected on this machine; installs stream into the activity tab.</p>
+        <div class="engines" id="engines"></div>
+        <h3 style="margin-top:10px">providers — the free-first router</h3>
+        <p style="color:var(--dim);margin:4px 0 0">declared in providers.toml; tried in this order, first answer wins.</p>
+        <table class="runs" style="margin-top:10px"><thead><tr><th>provider</th><th>kind</th><th>cost</th><th>status</th></tr></thead><tbody id="providers"></tbody></table>
+        <h3 style="margin-top:18px">routines — the patrol</h3>
+        <p style="color:var(--dim);margin:4px 0 0">declared in automations.toml; each firing is a normal run — receipts in activity.</p>
+        <table class="runs" style="margin-top:10px"><thead><tr><th>name</th><th>trigger</th><th>bot</th><th>last fired</th></tr></thead><tbody id="duties"></tbody></table>
+        <h3 style="margin-top:10px">power policy</h3>
+        <div class="toggles">
+          <div><span>free-first router — free tier first, cheapest paid fallback</span><span class="switch"></span></div>
+          <div><span>auto api keys — generate + store when an engine needs one</span><span class="switch"></span></div>
+          <div><span>notifications — themed pop-ups when minimized</span><span class="switch"></span></div>
+          <div><span>follow OS theme</span><span class="switch"></span></div>
+        </div>
+        <h3 style="margin:18px 0 8px">settings.md</h3>
+        <textarea id="settings-md" spellcheck="false"></textarea>
+        <div style="margin-top:8px"><button class="pill" id="save-settings">save</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer id="statusbar"><span>nest ready</span></footer>
+
+<div id="toasts"></div>
+
+<!-- first-run onboarding -->
+<div id="onboard" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:50;align-items:center;justify-content:center">
+  <div style="width:520px;max-height:86vh;overflow:auto;background:var(--card);border:1px solid var(--edge);border-radius:16px;padding:26px;color:var(--text)">
+    <div style="display:flex;align-items:center;gap:14px">
+      <span class="bird" style="width:52px;height:52px"></span>
+      <div><h2 style="margin:0">welcome to the nest</h2>
+      <p style="color:var(--dim);margin:4px 0 0">one minute of setup — you can change all of it later</p></div>
+    </div>
+    <h3 style="margin:20px 0 6px">1 · name your boss bot</h3>
+    <p style="color:var(--dim);margin:0 0 6px">the boss keeps an eye on everything and hands work to the right bot.</p>
+    <input id="ob-name" value="bigbird" style="width:100%;box-sizing:border-box;background:#000;border:1px solid var(--edge);border-radius:8px;color:var(--text);padding:8px">
+    <input id="ob-job" placeholder="its job (optional)" style="width:100%;box-sizing:border-box;margin-top:8px;background:#000;border:1px solid var(--edge);border-radius:8px;color:var(--text);padding:8px">
+    <h3 style="margin:18px 0 6px">2 · what may it touch?</h3>
+    <label style="display:block;margin:4px 0"><input type="checkbox" id="ob-read" checked> read your files</label>
+    <label style="display:block;margin:4px 0"><input type="checkbox" id="ob-write" checked> write + edit files</label>
+    <label style="display:block;margin:4px 0"><input type="checkbox" id="ob-run"> run commands (bash)</label>
+    <h3 style="margin:18px 0 6px">3 · engines to install</h3>
+    <p style="color:var(--dim);margin:0 0 6px">bots ride these CLIs — pick any to install now (1 click each).</p>
+    <div id="ob-engines"></div>
+    <div style="margin-top:20px;display:flex;gap:10px">
+      <button class="pill" id="ob-go" style="padding:10px 22px">build my nest</button>
+      <button id="ob-skip" style="background:none;border:none;color:var(--dim);cursor:pointer">skip for now</button>
+    </div>
+  </div>
+</div>
+
+<!-- bird template -->
+<template id="tpl-bird">
+  <span class="bwrap"><span class="bird"><svg viewBox="0 0 48 48">
+    <ellipse class="body" cx="24" cy="28" rx="16" ry="15"/>
+    <ellipse class="face" cx="24" cy="26" rx="9" ry="7"/>
+    <circle class="eye" cx="21" cy="25" r="2"/><circle class="eye" cx="27" cy="25" r="2"/>
+    <polygon class="beak" points="24,29 20,33 28,33"/>
+    <polygon class="crest" points="22,10 24,4 26,10"/>
+    <ellipse class="wing" cx="10" cy="30" rx="5" ry="8"/>
+  </svg></span><span class="zzz">z</span></span>
+</template>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const birdSvg = () => document.getElementById('tpl-bird').content.cloneNode(true);
+const state = { agents: [], perches: [], chatBot: null, tab: 'chat', interviewing: false, session: null };
+const PALETTE = ['#b98bff','#fb923c','#38bdf8','#f472b6','#2dd4bf','#a3e635','#facc15','#f87171'];
+
+async function api(path, body) {
+  const res = await fetch(path, body ? { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) } : {});
+  return res.json();
+}
+
+function botColor(name) {
+  let h = 0; for (const c of name) h = (h*31 + c.charCodeAt(0)) >>> 0;
+  return document.body.dataset.theme === 'multi' ? PALETTE[h % PALETTE.length] : '';
+}
+
+function renderRoster() {
+  const r = $('#roster'); r.innerHTML = '';
+  for (const a of state.agents) {
+    const el = document.createElement('div');
+    el.className = `bot st-${a.state}`;
+    el.style.setProperty('--b', botColor(a.name));
+    el.appendChild(birdSvg());
+    el.querySelector('.zzz').style.display = a.state === 'idle' ? '' : 'none';
+    const info = document.createElement('div');
+    info.innerHTML = `<div class="nm">${esc(a.name)}${a.boss ? ' ♛' : ''}</div><div class="jb">${esc(a.job||'')}</div>`;
+    el.appendChild(info);
+    const dot = document.createElement('span'); dot.className = 'dot'; el.appendChild(dot);
+    el.onclick = () => { state.chatBot = a.name; renderTabs(); renderChatHint(); switchPane('chat'); };
+    r.appendChild(el);
+  }
+  if (!state.agents.length) {
+    r.innerHTML = `<div style="padding:14px;color:var(--dim);font-size:12px">no bots yet — eggbot builds your first one</div>`;
+  }
+}
+
+function renderTabs() {
+  const t = $('#tabs'); t.innerHTML = '';
+  const tabs = [
+    ['chat', state.chatBot ? `chat — ${state.chatBot}` : 'ask the nest', state.chatBot],
+    ['activity', 'activity', null],
+  ];
+  if (state.interviewing) tabs.push(['interview', '🥚 eggbot', 'eggbot']);
+  tabs.push(['settings', 'settings', null]);
+  for (const [id, label, bot] of tabs) {
+    const b = document.createElement('button');
+    b.className = 'tab' + (state.tab === id ? ' active' : '') + (bot ? ' tab-bot' : '');
+    if (bot) b.style.setProperty('--t', botColor(bot));
+    b.textContent = label;
+    b.onclick = () => switchPane(id);
+    t.appendChild(b);
+  }
+}
+
+function switchPane(id) {
+  state.tab = id;
+  document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+  $('#pane-' + id).classList.add('active');
+  renderTabs();
+  if (id === 'activity') loadRuns();
+  if (id === 'settings') loadSettings();
+}
+
+function renderChatHint() {
+  $('#task').placeholder = state.chatBot
+    ? `message ${state.chatBot} — hatched directly`
+    : 'tell the nest what to do — the brood picks the right bot';
+}
+
+function addMsg(who, text, cls = '') {
+  const m = document.createElement('div');
+  m.className = `msg ${cls || (who === 'you' ? 'me' : 'bot')}`;
+  if (who !== 'you') { const b = birdSvg(); b.querySelector('.zzz').remove(); m.appendChild(b); m.style.setProperty('--b', botColor(who)); }
+  const bub = document.createElement('div'); bub.className = 'bub';
+  bub.innerHTML = `<div class="who">${esc(who)}</div><div class="txt"></div>`;
+  bub.querySelector('.txt').textContent = text;
+  m.appendChild(bub);
+  $('#chatlog').appendChild(m);
+  $('#chatlog').scrollTop = 1e9;
+  return m;
+}
+
+function toast(text) {
+  const t = document.createElement('div'); t.className = 'toast';
+  const b = birdSvg(); b.querySelector('.zzz').remove(); t.appendChild(b);
+  const s = document.createElement('span'); s.textContent = text; t.appendChild(s);
+  $('#toasts').appendChild(t);
+  setTimeout(() => t.remove(), 6000);
+}
+
+function peepChip(peep, bot) {
+  if (peep.kind === 'output' && !peep.text.trim()) return null;
+  const c = document.createElement('span');
+  const k = peep.kind;
+  c.className = 'lp' + (k === 'step' ? ' step' : k === 'done' ? ' done' : k === 'failed' || k === 'budget_exceeded' ? ' fail' : '');
+  c.textContent =
+    k === 'spawned' ? `${bot} hatched` :
+    k === 'step' ? `⚙ step ${peep.n}` :
+    k === 'done' ? `✔ ${bot} done` :
+    k === 'failed' ? `✖ ${bot}: ${peep.error}` :
+    k === 'budget_exceeded' ? `✖ step budget hit` :
+    k === 'ask' ? `? ${peep.tool} needs approval` : k;
+  return c;
+}
+
+async function send() {
+  const task = $('#task').value.trim();
+  if (!task) return;
+  $('#task').value = '';
+  addMsg('you', task, 'me');
+  const thinking = addMsg(state.chatBot || 'the nest', '…', 'bot thinking');
+  const loop = $('#loop'); loop.innerHTML = '';
+  const endpoint = state.chatBot ? '/api/hatch' : '/api/brood';
+  const { id, error } = await api(endpoint, { bot: state.chatBot, task });
+  if (error) { thinking.querySelector('.txt').textContent = 'could not hatch: ' + error; return; }
+  const src = new EventSource(`/api/runs/${id}/events`);
+  let lastBot = state.chatBot || 'the nest';
+  const out = { text: '' };
+  src.onmessage = e => {
+    const { bot, peep } = JSON.parse(e.data);
+    lastBot = bot || lastBot;
+    const chip = peepChip(peep, bot);
+    if (chip) loop.appendChild(chip);
+    if (peep.kind === 'output' && peep.text.trim()) { out.text += peep.text + '\n'; thinking.querySelector('.txt').textContent = out.text.trim(); }
+    if (peep.kind === 'done') toast(`${bot} finished`);
+    if (peep.kind === 'failed') toast(`${bot} failed — see activity`);
+  };
+  src.addEventListener('receipt', () => { src.close(); thinking.classList.remove('thinking'); refresh(); });
+}
+
+async function refresh() {
+  const s = await api('/api/state');
+  state.agents = s.agents; state.perches = s.perches;
+  renderRoster();
+  const sb = $('#statusbar');
+  const working = s.agents.filter(a => a.state === 'working').map(a => a.name);
+  const warn = (s.warnings||[]).length ? `<span style="color:#f87171" title="${esc((s.warnings||[]).join('&#10;'))}">⚠ ${s.warnings.length} bad file(s)</span>` : '';
+  sb.innerHTML = `<span>${s.agents.length} bots</span><span>${working.length ? esc(working.join(', ')) + ' working' : 'all idle'}</span><span>theme: ${document.body.dataset.theme}</span>${warn}`;
+  if (s.onboarding && !state.onboardShown) { state.onboardShown = true; showOnboard(); }
+}
+
+async function loadRuns() {
+  const { receipts } = await api('/api/runs');
+  $('#runs').innerHTML = receipts.map(r =>
+    `<tr><td>${esc(r.id)}</td><td>${esc(r.agent)}</td><td><span class="tag ${esc(r.status)}">${esc(r.status)}</span></td><td>${esc(r.steps)}</td><td>${((r.finished_ms - r.started_ms)/1000).toFixed(1)}</td></tr>`
+  ).join('') || '<tr><td colspan="5" style="color:var(--dim)">no runs yet</td></tr>';
+}
+
+async function loadSettings() {
+  const s = await api('/api/settings');
+  $('#settings-path').textContent = s.path;
+  $('#settings-md').value = s.content || '# nest settings\n\ntheme: multi\nfollow_os_theme: true\nrouter: free-first\nauto_api_keys: true\nnotifications: themed\n';
+  $('#engines').innerHTML = state.perches.map(p => `
+    <div class="engine ${p.installed ? 'installed' : ''}" id="eng-${esc(p.name)}">
+      <span class="bird" style="width:34px;height:34px"></span>
+      <div class="en">${esc(p.name)}</div>
+      <div class="ins">${p.installed ? 'installed ✓' : (p.install ? `<button class="pill" data-install="${esc(p.name)}" style="padding:4px 12px;font-size:11px">install</button>` : 'manual install')}</div>
+    </div>`).join('');
+  document.querySelectorAll('[data-install]').forEach(b => b.onclick = () => installEngine(b.dataset.install));
+  $('#duties').innerHTML = (state.duties || []).map(d =>
+    `<tr><td>${esc(d.name)}</td><td>${esc(d.trigger)}</td><td>${esc(d.bot || 'brood')}</td><td>${d.last_fired ? new Date(d.last_fired*1000).toLocaleTimeString() : '—'}</td></tr>`
+  ).join('') || '<tr><td colspan="4" style="color:var(--dim)">no automations.toml — schedules and file watches show up here</td></tr>';
+  $('#providers').innerHTML = (state.providers || []).map(p =>
+    `<tr><td>${esc(p.name)}</td><td>${esc(p.kind)}</td><td><span class="tag ${p.cost === 'free' ? 'done' : ''}">${esc(p.cost)}</span></td><td>${p.available ? 'ready' : 'not installed'}</td></tr>`
+  ).join('') || '<tr><td colspan="4" style="color:var(--dim)">no providers.toml — echo stub answers until you add one</td></tr>';
+}
+
+// a 1-click install is a run like any other — its peeps land in activity
+async function installEngine(name) {
+  const card = $('#eng-' + CSS.escape(name));
+  if (card) card.querySelector('.ins').textContent = 'installing…';
+  const r = await api('/api/perches/install', { name });
+  if (r.error) { if (card) card.querySelector('.ins').textContent = 'failed — ' + r.error; return; }
+  toast(`installing ${name}`);
+  const es = new EventSource(`/api/runs/${r.id}/events`);
+  es.addEventListener('receipt', () => { es.close(); refresh(); loadSettings(); });
+  es.onerror = () => { es.close(); refresh(); loadSettings(); };
+}
+
+// settings.md is the source of truth for the theme unless the user overrode
+async function applySavedTheme() {
+  if (localStorage.getItem('nest-theme')) return;
+  const s = await api('/api/settings');
+  const m = (s.content || '').match(/^\s*theme:\s*(\S+)/m);
+  if (m && ['fluro','mono','multi'].includes(m[1])) {
+    document.body.dataset.theme = m[1];
+    $('#theme').value = m[1];
+  }
+}
+
+function showOnboard() {
+  const el = $('#onboard');
+  el.style.display = 'flex';
+  el.querySelector('.bird').appendChild(birdSvg());
+  el.querySelector('.zzz').remove();
+  $('#ob-engines').innerHTML = state.perches
+    .filter(p => !p.installed && p.install)
+    .map(p => `<label style="display:block;margin:4px 0"><input type="checkbox" class="ob-eng" value="${esc(p.name)}"> ${esc(p.name)} — <span style="color:var(--dim)">${esc(p.install)}</span></label>`)
+    .join('') || '<p style="color:var(--dim)">all engines installed (or none installable)</p>';
+  $('#ob-skip').onclick = () => el.style.display = 'none';
+  $('#ob-go').onclick = async () => {
+    const abilities = ['read','write','commands'].filter((_, i) => [$('#ob-read'),$('#ob-write'),$('#ob-run')][i].checked);
+    const engines = [...document.querySelectorAll('.ob-eng:checked')].map(c => c.value);
+    const r = await api('/api/onboarding', {
+      name: $('#ob-name').value.trim() || 'bigbird',
+      job: $('#ob-job').value.trim(),
+      abilities, engines,
+    });
+    if (r.error) { toast(r.error); return; }
+    el.style.display = 'none';
+    toast(`say hi to ${r.boss} — your boss bot`);
+    refresh();
+  };
+}
+
+$('#save-settings').onclick = async () => {
+  const r = await api('/api/settings', { content: $('#settings-md').value });
+  toast(r.saved ? 'settings saved to ' + r.saved : 'save failed');
+};
+
+$('#theme').onchange = e => {
+  document.body.dataset.theme = e.target.value;
+  localStorage.setItem('nest-theme', e.target.value);
+  refresh();
+};
+document.body.dataset.theme = localStorage.getItem('nest-theme') || 'multi';
+$('#theme').value = document.body.dataset.theme;
+$('#mode').onclick = e => { e.target.textContent = e.target.textContent === 'guided' ? 'expert' : 'guided'; };
+$('#addbot').onclick = startInterview;
+
+function ivMsg(text, cls) {
+  const m = document.createElement('div');
+  m.className = `msg ${cls}`;
+  if (cls !== 'me') { const b = birdSvg(); b.querySelector('.zzz')?.remove(); m.appendChild(b); }
+  const bub = document.createElement('div'); bub.className = 'bub';
+  bub.innerHTML = `<div class="who">${cls === 'me' ? 'you' : 'eggbot'}</div><div class="txt"></div>`;
+  bub.querySelector('.txt').textContent = text;
+  m.appendChild(bub);
+  $('#iv-log').appendChild(m);
+  $('#iv-log').scrollTop = 1e9;
+}
+
+async function startInterview() {
+  state.interviewing = true;
+  $('#iv-log').innerHTML = '';
+  const r = await api('/api/interview/start', {});
+  state.session = r.session;
+  ivMsg('hello! I build bots. four questions and yours joins the roster.', 'bot');
+  ivMsg(r.question, 'bot');
+  switchPane('interview');
+  $('#iv-input').focus();
+}
+
+async function ivSend() {
+  const answer = $('#iv-input').value.trim();
+  if (!answer) return;
+  $('#iv-input').value = '';
+  ivMsg(answer, 'me');
+  const r = await api('/api/interview/answer', { session: state.session, answer });
+  if (r.draft) $('#iv-draft').textContent = r.draft;
+  if (r.error) { ivMsg(r.error + ' — try again', 'bot'); return; }
+  if (r.done) { $('#iv-build').style.display = ''; ivMsg('all set — hit build it, or keep editing by answering', 'bot'); return; }
+  if (r.question) ivMsg(r.question, 'bot');
+}
+
+async function ivBuild() {
+  const r = await api('/api/interview/build', { session: state.session });
+  if (r.error) { ivMsg('could not build: ' + r.error, 'bot'); return; }
+  toast(`${r.built} hatched — joined the roster`);
+  state.interviewing = false;
+  $('#iv-build').style.display = 'none';
+  await refresh();
+  state.chatBot = r.built;
+  renderChatHint();
+  switchPane('chat');
+}
+
+$('#iv-send').onclick = ivSend;
+$('#iv-input').addEventListener('keydown', e => { if (e.key === 'Enter') ivSend(); });
+$('#iv-build').onclick = ivBuild;
+$('#send').onclick = send;
+$('#task').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+
+renderTabs(); renderChatHint(); applySavedTheme();
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

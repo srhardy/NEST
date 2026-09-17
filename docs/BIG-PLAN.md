@@ -103,6 +103,27 @@ but the default is the guided path."*
 - **"+ bot" always opens eggbot** — never a raw form. Expert mode
   additionally offers "new bot from manifest."
 
+### The Phase-2 brief (Steven's GUI direction)
+
+- **Three dark themes on black**, user-switchable, OS-following by default
+  with an in-app override: **fluro** (neon text), **mono** (white→grey),
+  **multi** (each bot owns a colour). All imagery is crisp white animated
+  characters; notifications/popups/speech bubbles follow the same theme.
+- **Minimized forms:** taskbar icon + tooltip, themed notification
+  bubbles, or a floating "nested birdy" mascot on the desktop — user picks,
+  respects OS theme unless overridden. (Native chrome — lands with the
+  Tauri wrapper; the web shell can't own the taskbar.)
+- **Bigbird is the boss's default name** — onboarding lets the user rename
+  agents, roles, and abilities; it's the BOB concept given a nest identity.
+- **Engine picker at onboarding:** Claude Code / Codex / OpenCode / Pi
+  cards with **1-click install**; auto API-key generation + storage;
+  **free-first router** (free tier → cheapest paid) as the default power
+  source — the free-llm router ships as a selectable Spoke plugin.
+- **Everything remote is a Spoke plugin:** telegram, slack, smart-watch —
+  1-click add under the Spoke idea; no bespoke integrations.
+- **Backend settings are an editable `.md`** — the GUI edits it for you,
+  but the file stays human-readable and hand-editable.
+
 ### Where each reference product contributes
 
 | From | We take | We deliberately skip |
@@ -162,7 +183,15 @@ Why this layering wins:
 | Fork survey (142 repos) + BobTheBuilder deep-dive | ✅ `research/07` |
 | `[[bots]]`/`[[automations]]` + boss/permissions/routing/services schema | ✅ **PR #2 + PR #3** (awaiting merge) |
 | `bob-council` starter package (8 agents + 6 skills) | ✅ **PR #3** |
-| Engine spine (Phase 2b — wrap-don't-rebuild) | 🔲 next step |
+| Engine spine (nest/ — perches, peeps, roost, brood, forage) | ✅ **PR #4** |
+| The Shell v1 (Phase 2 — one-window app: roster, tabs, watch-it-think, 3 themes, settings.md) | ✅ **PR #5** (merged) |
+| eggbot interview in the shell + review-hardened server | ✅ **PR #6** |
+| First-run onboarding (name your boss, abilities, engine picks) + real 1-click installs | ✅ `devin/eggbot` |
+| Free-first provider router (`providers.toml` → failover, `nest providers`/`ask`) | ✅ `devin/eggbot` |
+| `remotes` package (telegram/slack/watch folder-spool bridges) | ✅ `devin/eggbot` |
+| Remotes watcher + `remotes` package fully closed (inbox→brood→outbox) | ✅ **PR #7** |
+| The patrol — `[[automation]]` routines (cron UTC + file-change) run as real dispatches | ✅ **PR #7** |
+| Desktop chrome (taskbar, desktop birdy, OS notifications) | 🔲 next step — Tauri wrapper over the shell |
 | Access to the private app repo | 🔲 **needs Steven** (see §9) — only for debloat Track B |
 
 ---
@@ -357,7 +386,7 @@ learning loop: bot → SKILL.md → `spoke add` self-install → provenance in
 | **1a — Installer upstream** | patch lands on CommandCodeAI/desktop (or issue filed) | their repo access or issue | minutes |
 | **2 — The Shell (flagship)** | one-window app: tab strip, sidebar roster of **animated bot characters** (idle/thinking/working/stuck states), Guided/Expert mode toggle, first-run onboarding — plus the **watch-it-think loop view** (waku-agent gem: every step the agent takes lights up on a visible loop, Guided mode's transparency) | **new repo (Steven is creating)** + engine spine (2b) | 1–2 sessions after access |
 | **2a — eggbot in the shell** | the walkthrough: 4-question interview → `spoke diff` preview card → build → test-drive → hand-off to roster; rubric skill enforcing the one-job bar | phase 1 + 2 | 1 session after access |
-| **2b — Engine spine (thin)** | **wrap, don't rebuild**: spawn wrappers around installed agent CLIs (Claude Code, Codex, Pi, agent-zero — the agentctl pattern: launch, stream lifecycle events, collect results, no control plane) + a unified provider API (pi-ai shape). This IS the "start thin" engine answer — NEST talks to every harness the user already has | repo connected | ~1 session |
+| **2b — Engine spine (thin)** ✅ **PR #4** | **`nest/` crate shipped**: perches wrap installed agent CLIs (claude-code, codex + echo/fail stubs; launch, stream `peep` lifecycle events, collect receipts in the roost, no control plane) + `forage` provider layer (echo stub + any local CLI). `nest` CLI: `perches/agents/hatch/brood/roost/imprint/ask` — the Expert-mode passthrough | repo connected | done |
 | **3 — Sharing** | bots as Spoke packages; link/file import; starter template pack: oncall responder, PR reviewer, wiki keeper, **+ the council bot** (second-opinion capability built on the shipped llm-council skill + fusion-harness/gauntlet-loop patterns: N-way opinions → critic → synthesis) | phase 1 | ~1 session |
 | **4 — Routines** | scheduler + webhooks in-app; `[[automations]]`→`.nest/cron` once format verified; quiet reporting + receipts | phase 2; cron format | 1–2 sessions |
 | **4a — Provider layer (zero-cost)** | local provider proxy with **free-tier failover** (freellmapi/codex-router patterns — honors Bob's cost-policy.md) + **CodexBar-style limit awareness** in the model-tier picker (per-provider reset windows shown when choosing `model:`) | phase 2b | ~1 session |
@@ -366,11 +395,11 @@ learning loop: bot → SKILL.md → `spoke add` self-install → provenance in
 | **B — Debloat (parallel)** | Tier A config (~95–115 MB) + installer fix + packaging audit | private repo's build config | <1 session |
 | **B2 — Debloat tier B** | jimp/otel/reconciler audit + fixes | source read access | <1 session |
 
-**Critical path:** Phase 1 (Spoke schema) ✅ shipped in PR #2; the Boss
-fold ✅ shipped in PR #3. Next executable step is **2b — the engine
-spine** (wrap-don't-rebuild spawn wrappers): it unblocks Phase 2's shell.
-The GUI is now Phase 2, not an afterthought — the noob-first shell IS
-the product.
+**Critical path:** Phase 1 ✅ PR #2; the Boss fold ✅ PR #3; the engine
+spine ✅ PR #4 (`nest/` — perches wrap the CLIs, peeps stream events,
+the roost keeps receipts, the brood dispatches). Next executable step is
+**Phase 2 — the shell**: the one-window noob app over the spine. The GUI
+IS the product.
 
 ---
 
