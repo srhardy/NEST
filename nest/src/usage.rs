@@ -4,9 +4,15 @@
 //! `~/.nest/usage/<name>.json`: `{window_start, count}` — a rolling window
 //! anchored at the first call. The router skips providers over their
 //! limit and the picker shows "used/limit · resets at …" per row.
+//!
+//! Reservations are atomic across processes: `try_reserve` takes the
+//! check-and-increment under a lockfile before the provider is ever
+//! called, so two `nest` processes can't both slip past `count = limit`.
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -49,8 +55,54 @@ fn now() -> u64 {
         .as_secs()
 }
 
+/// Provider names become filenames — anything else becomes `_`, so a
+/// crafted `../name` can't escape the usage dir.
+fn sanitize(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn counter_file(home: &Path, name: &str) -> PathBuf {
-    home.join("usage").join(format!("{name}.json"))
+    home.join("usage").join(format!("{}.json", sanitize(name)))
+}
+
+fn lock_file(home: &Path, name: &str) -> PathBuf {
+    home.join("usage").join(format!("{}.lock", sanitize(name)))
+}
+
+/// O_EXCL lockfile — atomic across processes on every platform we
+/// support (a plain file, removed on drop).
+struct Lock(PathBuf);
+impl Lock {
+    /// Spin briefly: reservations are milliseconds, never seconds.
+    fn take(path: PathBuf) -> Result<Option<Lock>> {
+        for _ in 0..300 {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(_) => return Ok(Some(Lock(path))),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(e) => {
+                    return Err(
+                        anyhow::anyhow!("cannot lock {}: {e}", path.display()).into(),
+                    )
+                }
+            }
+        }
+        Ok(None)
+    }
+}
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 fn load(home: &Path, name: &str, window: u64) -> Counter {
@@ -71,6 +123,19 @@ fn load(home: &Path, name: &str, window: u64) -> Counter {
     c
 }
 
+/// Write-then-rename so a torn write can't corrupt the counter.
+fn store(home: &Path, name: &str, c: &Counter) -> Result<()> {
+    let path = counter_file(home, name);
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    let tmp = path.with_extension("json.tmp");
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(serde_json::to_string(c)?.as_bytes())?;
+    }
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
 /// Current usage for a provider — None when it declares no limit.
 pub fn status(home: &Path, spec: &ProviderSpec) -> Option<Usage> {
     let limit = spec.limit?;
@@ -88,22 +153,35 @@ pub fn status(home: &Path, spec: &ProviderSpec) -> Option<Usage> {
     })
 }
 
-/// Count one completed call against the provider's window.
-pub fn record(home: &Path, spec: &ProviderSpec) -> Result<()> {
-    if spec.limit.is_none() {
-        return Ok(());
-    }
+/// Reserve one call against the provider's window — the atomic
+/// check-and-increment the router runs *before* calling the provider.
+/// Returns `false` when the window is already spent. A failed provider
+/// call still consumes its reservation: the counter tracks attempts,
+/// which is the honest rate-limit model.
+///
+/// `Err` means the counter couldn't be trusted (lock contention or an
+/// IO failure) — the caller treats it as a provider failure, never as
+/// a free pass.
+pub fn try_reserve(home: &Path, spec: &ProviderSpec) -> Result<bool> {
+    let Some(limit) = spec.limit else {
+        return Ok(true); // unlimited — nothing to reserve
+    };
     let window = spec
         .window
         .as_deref()
         .and_then(window_secs)
         .unwrap_or(86400);
+    std::fs::create_dir_all(lock_file(home, &spec.name).parent().unwrap().to_path_buf())?;
+    let Some(_lock) = Lock::take(lock_file(home, &spec.name))? else {
+        anyhow::bail!("usage counter for '{}' is contended", spec.name);
+    };
     let mut c = load(home, &spec.name, window);
+    if c.count >= limit {
+        return Ok(false);
+    }
     c.count += 1;
-    let path = counter_file(home, &spec.name);
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(&path, serde_json::to_string(&c)?)?;
-    Ok(())
+    store(home, &spec.name, &c)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -113,8 +191,12 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn spec(limit: Option<u64>, window: Option<&str>) -> ProviderSpec {
+        spec_named("p", limit, window)
+    }
+
+    fn spec_named(name: &str, limit: Option<u64>, window: Option<&str>) -> ProviderSpec {
         ProviderSpec {
-            name: "p".into(),
+            name: name.into(),
             kind: "command".into(),
             program: Some("cat".into()),
             args: vec![],
@@ -138,29 +220,42 @@ mod tests {
     }
 
     #[test]
-    fn counts_until_limit_then_exhausts_and_resets() {
+    fn reserves_until_limit_then_refuses() {
         let home = tempfile::tempdir().unwrap();
         let s = spec(Some(2), Some("1h"));
-        assert_eq!(status(home.path(), &s).unwrap().used, 0);
-        record(home.path(), &s).unwrap();
-        record(home.path(), &s).unwrap();
+        assert!(try_reserve(home.path(), &s).unwrap());
+        assert!(try_reserve(home.path(), &s).unwrap());
+        assert!(!try_reserve(home.path(), &s).unwrap());
         let u = status(home.path(), &s).unwrap();
         assert_eq!(u.used, 2);
         assert!(u.exhausted);
         // roll the window start into the past → fresh counter
-        let path = counter_file(home.path(), "p");
-        std::fs::write(&path, r#"{"window_start":1,"count":5}"#).unwrap();
-        let u = status(home.path(), &s).unwrap();
-        assert_eq!(u.used, 0);
-        assert!(!u.exhausted);
+        std::fs::write(
+            counter_file(home.path(), "p"),
+            r#"{"window_start":1,"count":5}"#,
+        )
+        .unwrap();
+        assert!(try_reserve(home.path(), &s).unwrap());
+        assert!(!status(home.path(), &s).unwrap().exhausted);
     }
 
     #[test]
-    fn no_limit_means_no_usage() {
+    fn no_limit_means_no_tracking() {
         let home = tempfile::tempdir().unwrap();
         let s = spec(None, None);
         assert!(status(home.path(), &s).is_none());
-        record(home.path(), &s).unwrap();
+        assert!(try_reserve(home.path(), &s).unwrap());
         assert!(!counter_file(home.path(), "p").exists());
+    }
+
+    #[test]
+    fn sneaky_names_stay_inside_usage() {
+        let home = tempfile::tempdir().unwrap();
+        let s = spec_named("../../etc/evil", Some(1), None);
+        try_reserve(home.path(), &s).unwrap();
+        assert!(counter_file(home.path(), "../../etc/evil")
+            .to_string_lossy()
+            .contains("usage"));
+        assert!(home.path().join("usage").join(".._.._etc_evil.json").exists());
     }
 }

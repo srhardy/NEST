@@ -122,8 +122,11 @@ impl Forage for OpenAiForage {
             "-H",
             "content-type: application/json",
         ]);
-        if let Some(key) = &self.api_key {
-            cmd.args(["-H", &format!("authorization: Bearer {key}")]);
+        // the bearer header travels in a 0600 temp file — argv is
+        // world-readable on most systems, the token isn't
+        let _hdr_file = self.header_file()?;
+        if let Some(f) = &_hdr_file {
+            cmd.args(["-H", &format!("@{}", f.0.display())]);
         }
         let mut child = cmd
             .args([&url, "-d", "@-"])
@@ -158,6 +161,43 @@ impl Forage for OpenAiForage {
     }
 }
 
+/// A 0600 file holding `authorization: Bearer …` for `curl -H @file`;
+/// deleted on drop. Keeps the token out of the process list.
+struct HeaderFile(std::path::PathBuf);
+impl HeaderFile {
+    fn new(key: &str) -> Result<HeaderFile> {
+        let dir = std::env::temp_dir().join(format!("nest-hdr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("header");
+        {
+            #[cfg(unix)]
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            opts.mode(0o600);
+            let mut f = opts.open(&path)?;
+            f.write_all(format!("authorization: Bearer {key}\n").as_bytes())?;
+        }
+        Ok(HeaderFile(path))
+    }
+}
+impl Drop for HeaderFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_dir(self.0.parent().unwrap());
+    }
+}
+
+impl OpenAiForage {
+    fn header_file(&self) -> Result<Option<HeaderFile>> {
+        match &self.api_key {
+            Some(k) => Ok(Some(HeaderFile::new(k)?)),
+            None => Ok(None),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The free-first router
 // ---------------------------------------------------------------------------
@@ -186,11 +226,7 @@ fn provider_available(spec: &ProviderSpec) -> bool {
                 return false;
             }
         }
-        return std::env::var_os("PATH")
-            .map(|paths| {
-                std::env::split_paths(&paths).any(|d| crate::perch::is_exec_pub(&d.join("curl")))
-            })
-            .unwrap_or(false);
+        return crate::perch::which("curl").is_some();
     }
     let bin = match spec.kind.as_str() {
         "ollama" => "ollama",
@@ -336,14 +372,27 @@ impl Router {
                 .collect(),
         };
         for spec in candidates {
+            // reserve the window slot before spending it — atomic across
+            // processes; a counter error is a provider failure, never a
+            // free pass past the cap
+            if let Some(h) = &self.home {
+                match crate::usage::try_reserve(h, spec) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        errors.push(format!("{}: limit window spent", spec.name));
+                        continue;
+                    }
+                    Err(e) => {
+                        errors.push(format!("{}: {e:#}", spec.name));
+                        continue;
+                    }
+                }
+            }
             let Some(forage) = provider_forage(spec) else {
                 continue;
             };
             match forage.complete(req) {
                 Ok(mut res) => {
-                    if let Some(h) = &self.home {
-                        let _ = crate::usage::record(h, spec);
-                    }
                     res.provider = format!("{} ({})", res.provider, spec.cost);
                     return Ok(res);
                 }
