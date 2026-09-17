@@ -71,6 +71,8 @@ enum Cmd {
         #[arg(long, default_value = "4747")]
         port: u16,
     },
+    /// Headless runtime — patrol + remotes with no UI. For launchd/systemd.
+    Daemon,
 }
 
 fn peep_line(bot: &str, peep: &Peep) -> Option<String> {
@@ -264,6 +266,10 @@ fn main() -> Result<()> {
         Cmd::Shell { port } => {
             let (dirs, cwd) = resolve(&cli)?;
             nest::shell::serve(dirs, cwd, *port)?;
+        }
+        Cmd::Daemon => {
+            let (dirs, cwd) = resolve(&cli)?;
+            nest::shell::daemon(dirs, cwd)?;
         }
     }
     Ok(())
