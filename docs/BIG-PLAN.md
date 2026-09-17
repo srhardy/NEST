@@ -192,6 +192,7 @@ Why this layering wins:
 | Remotes watcher + `remotes` package fully closed (inbox→brood→outbox) | ✅ **PR #7** |
 | The patrol — `[[automation]]` routines (cron UTC + file-change) run as real dispatches | ✅ **PR #7** |
 | Desktop chrome (taskbar, desktop birdy, OS notifications) | ✅ `devin/desktop` — Tauri wrapper: tray bird menu, close-to-background, draggable/clickable birdy, receipt notifications |
+| Starter bots pack (oncall, pr-reviewer, wiki-keeper, council) + link/file import (`spoke add <url|file|dir>`) | ✅ `devin/starter-pack` — Phase 3 |
 | Access to the private app repo | 🔲 **needs Steven** (see §9) — only for debloat Track B |
 
 ---
