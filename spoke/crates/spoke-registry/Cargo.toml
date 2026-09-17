@@ -1,0 +1,17 @@
+[package]
+name = "spoke-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Package resolution, fetching, scanning and dedupe for Spoke."
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+sha2.workspace = true
+spoke-core = { path = "../spoke-core" }
+
+[dev-dependencies]
+tempfile.workspace = true

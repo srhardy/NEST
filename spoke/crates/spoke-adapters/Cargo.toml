@@ -1,0 +1,15 @@
+[package]
+name = "spoke-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Per-harness adapters and the safe apply/backup engine for Spoke."
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+toml_edit.workspace = true
+spoke-core = { path = "../spoke-core" }
+
+[dev-dependencies]
+tempfile.workspace = true

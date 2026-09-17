@@ -1,0 +1,18 @@
+[package]
+name = "spoke-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The spoke binary: init, sync, diff, doctor."
+
+[[bin]]
+name = "spoke"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+spoke-core = { path = "../spoke-core" }
+spoke-adapters = { path = "../spoke-adapters" }
+spoke-registry = { path = "../spoke-registry" }
