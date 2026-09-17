@@ -332,6 +332,17 @@ Cloud tier, phase 4–5+: **headless `nest-agent` runner** via
 launchd/systemd — Devin's session model without a hosted control plane —
 plus a hosted registry and external Slack/Linear-style triggers.
 
+Fork-survey gems folded in (research/07): **engine = wrap, don't rebuild**
+(agentctl-style spawn wrappers + pi-ai unified provider API); **visible
+loop dashboard** (waku-agent — watch the agent think, Guided-mode
+transparency); **zero-cost provider layer** (freellmapi/codex-router
+failover honoring BobTheBuilder's cost-policy) + **CodexBar-style limit
+windows** in the model picker; **the council bot** as a template
+(llm-council + fusion-harness + gauntlet-loop patterns); and the endgame
+— **self-improving bots that author their own skills** (hermes-agent's
+learning loop: bot → SKILL.md → `spoke add` self-install → provenance in
+`agent.lock`).
+
 ---
 
 ## 8. The phase roadmap (priorities after Steven's noob-first directive)
@@ -341,18 +352,22 @@ plus a hosted registry and external Slack/Linear-style triggers.
 | **0 — Spec & research** | ✅ this plan, all research docs, adapter | — | done |
 | **1 — Plumbing finish** | `[[bots]]` + `[[automations]]` in `agent.toml` schema; adapter writes `.nest/agents/*.md`; `package.toml` carries bot defs; CLI `bot list/add` sugar | nothing — pure Spoke repo work | ~1 session |
 | **1a — Installer upstream** | patch lands on CommandCodeAI/desktop (or issue filed) | their repo access or issue | minutes |
-| **2 — The Shell (flagship)** | one-window app: tab strip, sidebar roster of **animated bot characters** (idle/thinking/working/stuck states), Guided/Expert mode toggle, first-run onboarding | **new repo (Steven is creating)** + app engine access | 1–2 sessions after access |
+| **2 — The Shell (flagship)** | one-window app: tab strip, sidebar roster of **animated bot characters** (idle/thinking/working/stuck states), Guided/Expert mode toggle, first-run onboarding — plus the **watch-it-think loop view** (waku-agent gem: every step the agent takes lights up on a visible loop, Guided mode's transparency) | **new repo (Steven is creating)** + engine spine (2b) | 1–2 sessions after access |
 | **2a — eggbot in the shell** | the walkthrough: 4-question interview → `spoke diff` preview card → build → test-drive → hand-off to roster; rubric skill enforcing the one-job bar | phase 1 + 2 | 1 session after access |
-| **3 — Sharing** | bots as Spoke packages; link/file import; starter template pack (oncall responder, PR reviewer, wiki keeper) | phase 1 | ~1 session |
+| **2b — Engine spine (thin)** | **wrap, don't rebuild**: spawn wrappers around installed agent CLIs (Claude Code, Codex, Pi, agent-zero — the agentctl pattern: launch, stream lifecycle events, collect results, no control plane) + a unified provider API (pi-ai shape). This IS the "start thin" engine answer — NEST talks to every harness the user already has | repo connected | ~1 session |
+| **3 — Sharing** | bots as Spoke packages; link/file import; starter template pack: oncall responder, PR reviewer, wiki keeper, **+ the council bot** (second-opinion capability built on the shipped llm-council skill + fusion-harness/gauntlet-loop patterns: N-way opinions → critic → synthesis) | phase 1 | ~1 session |
 | **4 — Routines** | scheduler + webhooks in-app; `[[automations]]`→`.nest/cron` once format verified; quiet reporting + receipts | phase 2; cron format | 1–2 sessions |
+| **4a — Provider layer (zero-cost)** | local provider proxy with **free-tier failover** (freellmapi/codex-router patterns — honors Bob's cost-policy.md) + **CodexBar-style limit awareness** in the model-tier picker (per-provider reset windows shown when choosing `model:`) | phase 2b | ~1 session |
 | **5 — Cloud tier (optional)** | headless `nest-agent` binary; hosted registry; external triggers | phase 3 + backend | 2–3 sessions |
+| **6 — Self-improving bots (the differentiator)** | **hermes-agent's learning loop**: bots author their own skills — Spoke packages written by bots (a bot finishes a hard task → extracts a reusable `SKILL.md` → `spoke add` self-installs → `agent.lock` records provenance "authored-by: <bot>"). The roster literally gets smarter with use | phase 3 + 4 | 1–2 sessions |
 | **B — Debloat (parallel)** | Tier A config (~95–115 MB) + installer fix + packaging audit | private repo's build config | <1 session |
 | **B2 — Debloat tier B** | jimp/otel/reconciler audit + fixes | source read access | <1 session |
 
-**Critical path:** Phase 1 (Spoke schema) needs nothing but your repo — I
-can start it the moment the GitHub repo is connected. Phase 2 (the shell)
-needs the new project repo + the app engine. The GUI is now Phase 2, not an
-afterthought — the noob-first shell IS the product.
+**Critical path:** Phase 1 (Spoke schema) ✅ shipped in PR #2; the Boss
+fold ✅ shipped in PR #3. Next executable step is **2b — the engine
+spine** (wrap-don't-rebuild spawn wrappers): it unblocks Phase 2's shell.
+The GUI is now Phase 2, not an afterthought — the noob-first shell IS
+the product.
 
 ---
 
@@ -390,15 +405,19 @@ there, and everything after flows through pull requests you can read.
 
 ### Step 4 — Engine decision
 NEST needs an agent engine. Options, easiest first:
+- **Start thin (now concrete — Phase 2b)** — the fork survey settled the
+  shape: **wrap, don't rebuild**. Spawn wrappers around the agent CLIs you
+  already have (Claude Code, Codex, Pi, agent-zero) — the agentctl pattern:
+  launch, stream lifecycle events, collect results, no control plane —
+  plus a unified provider API (pi-ai shape) for direct provider calls.
+  *(Rec: this. Fastest route to a real window, and NEST talks to every
+  harness the user already has.)*
 - **Build NEST's own** inside the NEST repo — Rust or TypeScript core that
   reads `.nest/`, `AGENTS.md`, `mcp.json` (the formats are already spec'd;
   BYOK via the same provider pattern). Most work, most ownership.
 - **Reuse the seed engine** — if you can get source access to Command
   Code's engine, NEST wraps it. Tell me who owns it / how you got the app
   and I'll help you figure out the path.
-- **Start thin** — the shell + Spoke + a simple chat loop first (call any
-  provider API directly), upgrade the engine later. *(Rec: start thin —
-  it's the fastest route to a real window on screen.)*
 
 ### Step 5 — Send the installer fix upstream (optional, good deed)
 Apply `research/installer-repo-name-fix.patch` and open a PR on
