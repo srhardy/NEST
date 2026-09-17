@@ -194,7 +194,7 @@
         <h3>settings — backed by <span id="settings-path" style="color:var(--dim)"></span></h3>
         <p style="color:var(--dim);margin:6px 0 12px">everything here is a plain file — edit it in the GUI or by hand; they stay the same truth.</p>
         <h3 style="margin-top:18px">engines — what powers your bots</h3>
-        <p style="color:var(--dim);margin:4px 0 0">detected on this machine; 1-click installs land in the desktop build.</p>
+        <p style="color:var(--dim);margin:4px 0 0">detected on this machine; installs stream into the activity tab.</p>
         <div class="engines" id="engines"></div>
         <h3 style="margin-top:10px">power policy</h3>
         <div class="toggles">
@@ -214,6 +214,32 @@
 <footer id="statusbar"><span>nest ready</span></footer>
 
 <div id="toasts"></div>
+
+<!-- first-run onboarding -->
+<div id="onboard" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:50;align-items:center;justify-content:center">
+  <div style="width:520px;max-height:86vh;overflow:auto;background:var(--card);border:1px solid var(--edge);border-radius:16px;padding:26px;color:var(--text)">
+    <div style="display:flex;align-items:center;gap:14px">
+      <span class="bird" style="width:52px;height:52px"></span>
+      <div><h2 style="margin:0">welcome to the nest</h2>
+      <p style="color:var(--dim);margin:4px 0 0">one minute of setup — you can change all of it later</p></div>
+    </div>
+    <h3 style="margin:20px 0 6px">1 · name your boss bot</h3>
+    <p style="color:var(--dim);margin:0 0 6px">the boss keeps an eye on everything and hands work to the right bot.</p>
+    <input id="ob-name" value="bigbird" style="width:100%;box-sizing:border-box;background:#000;border:1px solid var(--edge);border-radius:8px;color:var(--text);padding:8px">
+    <input id="ob-job" placeholder="its job (optional)" style="width:100%;box-sizing:border-box;margin-top:8px;background:#000;border:1px solid var(--edge);border-radius:8px;color:var(--text);padding:8px">
+    <h3 style="margin:18px 0 6px">2 · what may it touch?</h3>
+    <label style="display:block;margin:4px 0"><input type="checkbox" id="ob-read" checked> read your files</label>
+    <label style="display:block;margin:4px 0"><input type="checkbox" id="ob-write" checked> write + edit files</label>
+    <label style="display:block;margin:4px 0"><input type="checkbox" id="ob-run"> run commands (bash)</label>
+    <h3 style="margin:18px 0 6px">3 · engines to install</h3>
+    <p style="color:var(--dim);margin:0 0 6px">bots ride these CLIs — pick any to install now (1 click each).</p>
+    <div id="ob-engines"></div>
+    <div style="margin-top:20px;display:flex;gap:10px">
+      <button class="pill" id="ob-go" style="padding:10px 22px">build my nest</button>
+      <button id="ob-skip" style="background:none;border:none;color:var(--dim);cursor:pointer">skip for now</button>
+    </div>
+  </div>
+</div>
 
 <!-- bird template -->
 <template id="tpl-bird">
@@ -366,6 +392,7 @@ async function refresh() {
   const working = s.agents.filter(a => a.state === 'working').map(a => a.name);
   const warn = (s.warnings||[]).length ? `<span style="color:#f87171" title="${esc((s.warnings||[]).join('&#10;'))}">⚠ ${s.warnings.length} bad file(s)</span>` : '';
   sb.innerHTML = `<span>${s.agents.length} bots</span><span>${working.length ? esc(working.join(', ')) + ' working' : 'all idle'}</span><span>theme: ${document.body.dataset.theme}</span>${warn}`;
+  if (s.onboarding && !state.onboardShown) { state.onboardShown = true; showOnboard(); }
 }
 
 async function loadRuns() {
@@ -380,11 +407,60 @@ async function loadSettings() {
   $('#settings-path').textContent = s.path;
   $('#settings-md').value = s.content || '# nest settings\n\ntheme: multi\nfollow_os_theme: true\nrouter: free-first\nauto_api_keys: true\nnotifications: themed\n';
   $('#engines').innerHTML = state.perches.map(p => `
-    <div class="engine ${p.installed ? 'installed' : ''}">
+    <div class="engine ${p.installed ? 'installed' : ''}" id="eng-${esc(p.name)}">
       <span class="bird" style="width:34px;height:34px"></span>
       <div class="en">${esc(p.name)}</div>
-      <div class="ins">${p.installed ? 'installed ✓' : '1-click install (desktop)'}</div>
+      <div class="ins">${p.installed ? 'installed ✓' : (p.install ? `<button class="pill" data-install="${esc(p.name)}" style="padding:4px 12px;font-size:11px">install</button>` : 'manual install')}</div>
     </div>`).join('');
+  document.querySelectorAll('[data-install]').forEach(b => b.onclick = () => installEngine(b.dataset.install));
+}
+
+// a 1-click install is a run like any other — its peeps land in activity
+async function installEngine(name) {
+  const card = $('#eng-' + CSS.escape(name));
+  if (card) card.querySelector('.ins').textContent = 'installing…';
+  const r = await api('/api/perches/install', { name });
+  if (r.error) { if (card) card.querySelector('.ins').textContent = 'failed — ' + r.error; return; }
+  toast(`installing ${name}`);
+  const es = new EventSource(`/api/runs/${r.id}/events`);
+  es.addEventListener('receipt', () => { es.close(); refresh(); loadSettings(); });
+  es.onerror = () => { es.close(); refresh(); loadSettings(); };
+}
+
+// settings.md is the source of truth for the theme unless the user overrode
+async function applySavedTheme() {
+  if (localStorage.getItem('nest-theme')) return;
+  const s = await api('/api/settings');
+  const m = (s.content || '').match(/^\s*theme:\s*(\S+)/m);
+  if (m && ['fluro','mono','multi'].includes(m[1])) {
+    document.body.dataset.theme = m[1];
+    $('#theme').value = m[1];
+  }
+}
+
+function showOnboard() {
+  const el = $('#onboard');
+  el.style.display = 'flex';
+  el.querySelector('.bird').appendChild(birdSvg());
+  el.querySelector('.zzz').remove();
+  $('#ob-engines').innerHTML = state.perches
+    .filter(p => !p.installed && p.install)
+    .map(p => `<label style="display:block;margin:4px 0"><input type="checkbox" class="ob-eng" value="${esc(p.name)}"> ${esc(p.name)} — <span style="color:var(--dim)">${esc(p.install)}</span></label>`)
+    .join('') || '<p style="color:var(--dim)">all engines installed (or none installable)</p>';
+  $('#ob-skip').onclick = () => el.style.display = 'none';
+  $('#ob-go').onclick = async () => {
+    const abilities = ['read','write','commands'].filter((_, i) => [$('#ob-read'),$('#ob-write'),$('#ob-run')][i].checked);
+    const engines = [...document.querySelectorAll('.ob-eng:checked')].map(c => c.value);
+    const r = await api('/api/onboarding', {
+      name: $('#ob-name').value.trim() || 'bigbird',
+      job: $('#ob-job').value.trim(),
+      abilities, engines,
+    });
+    if (r.error) { toast(r.error); return; }
+    el.style.display = 'none';
+    toast(`say hi to ${r.boss} — your boss bot`);
+    refresh();
+  };
 }
 
 $('#save-settings').onclick = async () => {
@@ -455,7 +531,8 @@ $('#iv-build').onclick = ivBuild;
 $('#send').onclick = send;
 $('#task').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 
-renderTabs(); renderChatHint(); refresh();
+renderTabs(); renderChatHint(); applySavedTheme();
+refresh();
 setInterval(refresh, 3000);
 </script>
 </body>

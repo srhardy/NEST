@@ -285,3 +285,79 @@ fn sse_stream_does_not_block_api() {
     assert!(raw.contains("data:"), "no sse frames: {raw}");
     assert!(raw.contains("event: receipt"), "no receipt frame: {raw}");
 }
+
+#[test]
+fn onboarding_writes_boss_and_marks_done() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let port = start(&home, t.path());
+
+    // fixture writes a boss already — remove it so onboarding is needed
+    std::fs::remove_file(home.join("agents/bigbird.md")).unwrap();
+    let state = body(&http(port, "GET", "/api/state", None));
+    assert!(state.contains(r#""onboarding":true"#), "{state}");
+
+    let r = body(&http(
+        port,
+        "POST",
+        "/api/onboarding",
+        Some(
+            r#"{"name":"bigbird","job":"the boss","abilities":["read","commands"],"engines":["echo"]}"#,
+        ),
+    ));
+    assert!(r.contains(r#""boss":"bigbird""#), "{r}");
+    // echo is a builtin stub — nothing to install, so it gets no run
+    assert!(!r.contains(r#""run":"#), "{r}");
+
+    let boss = std::fs::read_to_string(home.join("agents/bigbird.md")).unwrap();
+    assert!(boss.contains("boss: true"), "{boss}");
+    assert!(boss.contains("bash: allow"), "{boss}");
+    assert!(boss.contains("write: deny"), "{boss}");
+
+    let settings = std::fs::read_to_string(home.join("settings.md")).unwrap();
+    assert!(settings.contains("onboarded: true"), "{settings}");
+
+    let state = body(&http(port, "GET", "/api/state", None));
+    assert!(state.contains(r#""onboarding":false"#), "{state}");
+
+    // a named boss counts even without the flag
+    std::fs::remove_file(home.join("settings.md")).unwrap();
+    let state = body(&http(port, "GET", "/api/state", None));
+    assert!(state.contains(r#""onboarding":false"#), "{state}");
+}
+
+#[test]
+fn perch_install_streams_a_run() {
+    let t = tempfile::tempdir().unwrap();
+    let port = start(&t.path().join("home"), t.path());
+
+    // echo has no installer
+    let bad = body(&http(
+        port,
+        "POST",
+        "/api/perches/install",
+        Some(r#"{"name":"echo"}"#),
+    ));
+    assert!(bad.contains("error"), "{bad}");
+
+    // claude-code has one — the run streams whatever the installer does
+    let r = body(&http(
+        port,
+        "POST",
+        "/api/perches/install",
+        Some(r#"{"name":"claude-code"}"#),
+    ));
+    assert!(r.contains("run-"), "{r}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let runs = body(&http(port, "GET", "/api/runs", None));
+        if runs.contains(r#""perch":"install""#) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "install receipt never landed: {runs}"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+}

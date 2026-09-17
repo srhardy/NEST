@@ -85,6 +85,15 @@ struct Interview {
     profile: String,
 }
 
+/// Lowercase kebab name, starting with a letter — e.g. `bigbird`, `pr-reviewer`.
+fn kebab_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+}
+
 impl Interview {
     fn question(&self) -> &'static str {
         match self.step {
@@ -323,10 +332,8 @@ impl Shell {
         json!({
             "agents": agents,
             "warnings": warnings,
-            "perches": perch::detected_perches()
-                .iter()
-                .map(|(n, d)| json!({"name": n, "installed": d}))
-                .collect::<Vec<_>>(),
+            "perches": perch::detected_perches(),
+            "onboarding": self.onboarding_needed(),
         })
     }
 
@@ -388,6 +395,221 @@ impl Shell {
             run.finish(receipt);
         });
         Ok(run_id)
+    }
+
+    /// One-click install: run the perch's install command, streaming its
+    /// output as peeps so the page watches it like any other run.
+    fn start_install(&self, name: &str) -> Result<String> {
+        let cmd = perch::all_perches()
+            .into_iter()
+            .find(|p| p.name() == name)
+            .and_then(|p| p.install_cmd().map(|c| c.to_string()))
+            .with_context(|| format!("no one-click install for '{name}'"))?;
+        let order = self.next_order();
+        let run = Arc::new(Run {
+            id: format!("run-{order}"),
+            order,
+            events: Mutex::new(Vec::new()),
+            active: Mutex::new(BTreeSet::new()),
+            done: AtomicBool::new(false),
+            receipt: Mutex::new(None),
+        });
+        self.register_run(run.clone());
+        let run_id = run.id.clone();
+        let roost_dir = self.dirs.roost();
+        let name = name.to_string();
+        thread::spawn(move || {
+            run.emit_peep(&name, &Peep::Spawned { pid: 0 });
+            let status = std::process::Command::new("sh")
+                .args(["-c", &cmd])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    use std::io::{BufRead, BufReader};
+                    let (tx, rx) = std::sync::mpsc::channel::<String>();
+                    for pipe in [
+                        child
+                            .stdout
+                            .take()
+                            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+                        child
+                            .stderr
+                            .take()
+                            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        let tx = tx.clone();
+                        thread::spawn(move || {
+                            for line in BufReader::new(pipe).lines() {
+                                if tx.send(line.unwrap_or_default()).is_err() {
+                                    return;
+                                }
+                            }
+                        });
+                    }
+                    drop(tx);
+                    while let Ok(line) = rx.recv() {
+                        run.emit_peep(&name, &Peep::Output { text: line });
+                    }
+                    child.wait()
+                });
+            let tail: Vec<String> = run
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .filter_map(|e| e["peep"]["text"].as_str().map(|s| s.to_string()))
+                .take(10)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let now = hatchling::now_ms();
+            let receipt = match status {
+                Ok(s) if s.success() => {
+                    run.emit_peep(&name, &Peep::Done { code: 0 });
+                    Receipt {
+                        id: format!("{name}-{now}-install"),
+                        agent: name.clone(),
+                        perch: "install".into(),
+                        task: cmd.clone(),
+                        status: Status::Done,
+                        steps: 0,
+                        exit_code: Some(0),
+                        started_ms: now,
+                        finished_ms: now,
+                        tail,
+                    }
+                }
+                Ok(s) => {
+                    let err = format!("install exited {}", s.code().unwrap_or(-1));
+                    run.emit_peep(&name, &Peep::Failed { error: err.clone() });
+                    Receipt {
+                        id: format!("{name}-{now}-install"),
+                        agent: name.clone(),
+                        perch: "install".into(),
+                        task: cmd.clone(),
+                        status: Status::Failed,
+                        steps: 0,
+                        exit_code: s.code(),
+                        started_ms: now,
+                        finished_ms: now,
+                        tail,
+                    }
+                }
+                Err(e) => {
+                    let err = format!("cannot run installer: {e}");
+                    run.emit_peep(&name, &Peep::Failed { error: err.clone() });
+                    Receipt {
+                        id: format!("{name}-{now}-install"),
+                        agent: name.clone(),
+                        perch: "install".into(),
+                        task: cmd.clone(),
+                        status: Status::SpawnFailed,
+                        steps: 0,
+                        exit_code: None,
+                        started_ms: now,
+                        finished_ms: now,
+                        tail: vec![err],
+                    }
+                }
+            };
+            roost::record(&roost_dir, &receipt).ok();
+            run.finish(receipt);
+        });
+        Ok(run_id)
+    }
+
+    /// Does the first-run wizard need to show? Yes until a boss exists
+    /// and `onboarded: true` is written into settings.md.
+    fn onboarding_needed(&self) -> bool {
+        let has_boss = self.agents().0.iter().any(|a| a.boss);
+        if has_boss {
+            return false;
+        }
+        let settings =
+            std::fs::read_to_string(self.dirs.home.join("settings.md")).unwrap_or_default();
+        !settings.lines().any(|l| l.trim() == "onboarded: true")
+    }
+
+    /// Write the user's named boss (Bigbird by default) with the
+    /// abilities they picked, flip the onboarded flag, and kick off any
+    /// engine installs they chose — the whole first-run flow in one call.
+    fn onboarding_finish(&self, body: &Value) -> Result<Value> {
+        let name = body["name"]
+            .as_str()
+            .unwrap_or("bigbird")
+            .trim()
+            .to_string();
+        if !kebab_name(&name) {
+            anyhow::bail!("name must be lowercase kebab (e.g. bigbird)");
+        }
+        let job = body["job"]
+            .as_str()
+            .unwrap_or("the boss — keeps an eye on everything and sends work to the right bot")
+            .to_string();
+        let abilities: Vec<&str> = body["abilities"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_else(|| vec!["read", "write"]);
+        let can_read = abilities.contains(&"read");
+        let can_write = abilities.contains(&"write");
+        let can_run = abilities.contains(&"commands");
+        let mut perms = BTreeMap::new();
+        perms.insert("read", if can_read { "allow" } else { "deny" });
+        perms.insert("write", if can_write { "allow" } else { "deny" });
+        perms.insert("edit", if can_write { "allow" } else { "deny" });
+        perms.insert(
+            "bash",
+            if can_run {
+                "allow"
+            } else if can_write {
+                "ask"
+            } else {
+                "deny"
+            },
+        );
+        let mut fm = format!("---\nname: {name}\ntitle: \"{job}\"\nboss: true\npermissions:\n");
+        for (tool, policy) in &perms {
+            fm.push_str(&format!("  {tool}: {policy}\n"));
+        }
+        fm.push_str("---\n\n");
+        let mut job_sentence = job.clone();
+        if let Some(c) = job_sentence.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        fm.push_str(&format!(
+            "You are {name}, the boss of this nest. Keep an eye on everything, \
+             answer what you can, and send work to the right bot when one fits better. \
+             {job_sentence}.\n"
+        ));
+        let agents_dir = self.dirs.home.join("agents");
+        std::fs::create_dir_all(&agents_dir)?;
+        std::fs::write(agents_dir.join(format!("{name}.md")), fm)?;
+
+        let settings_path = self.dirs.home.join("settings.md");
+        let mut settings = std::fs::read_to_string(&settings_path).unwrap_or_default();
+        if !settings.lines().any(|l| l.trim() == "onboarded: true") {
+            if !settings.is_empty() && !settings.ends_with('\n') {
+                settings.push('\n');
+            }
+            settings.push_str("onboarded: true\n");
+            std::fs::write(&settings_path, settings)?;
+        }
+
+        let mut installs = Vec::new();
+        if let Some(engines) = body["engines"].as_array() {
+            for e in engines.iter().filter_map(|v| v.as_str()) {
+                if let Ok(id) = self.start_install(e) {
+                    installs.push(json!({"engine": e, "run": id}));
+                }
+            }
+        }
+        Ok(json!({"boss": name, "installs": installs}))
     }
 
     /// Spawn a brood dispatch in the background.
@@ -664,6 +886,22 @@ fn route<'a>(
                 v["session"].as_u64().unwrap_or_default(),
                 v["answer"].as_str().unwrap_or_default(),
             ))
+        }
+        (&Method::Post, "/api/perches/install") => {
+            let body = read_body(request);
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            match shell.start_install(v["name"].as_str().unwrap_or_default()) {
+                Ok(id) => json_response(json!({"id": id})),
+                Err(e) => json_response(json!({"error": format!("{e:#}")})),
+            }
+        }
+        (&Method::Post, "/api/onboarding") => {
+            let body = read_body(request);
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            match shell.onboarding_finish(&v) {
+                Ok(out) => json_response(out),
+                Err(e) => json_response(json!({"error": format!("{e:#}")})),
+            }
         }
         (&Method::Post, "/api/interview/build") => {
             let body = read_body(request);

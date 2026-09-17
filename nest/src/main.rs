@@ -133,9 +133,15 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
         Cmd::Perches => {
-            for (name, found) in perch::detected_perches() {
-                let mark = if found { "installed" } else { "not found" };
-                println!("{name:<14} {mark}");
+            for p in perch::detected_perches() {
+                let mark = if p.installed {
+                    "installed".to_string()
+                } else {
+                    p.install
+                        .map(|c| format!("not found — install: {c}"))
+                        .unwrap_or_else(|| "not found".into())
+                };
+                println!("{:<14} {}", p.name, mark);
             }
         }
         Cmd::Agents => {
