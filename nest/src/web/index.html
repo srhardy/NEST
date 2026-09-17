@@ -199,6 +199,9 @@
         <h3 style="margin-top:10px">providers — the free-first router</h3>
         <p style="color:var(--dim);margin:4px 0 0">declared in providers.toml; tried in this order, first answer wins.</p>
         <table class="runs" style="margin-top:10px"><thead><tr><th>provider</th><th>kind</th><th>cost</th><th>status</th></tr></thead><tbody id="providers"></tbody></table>
+        <h3 style="margin-top:18px">routines — the patrol</h3>
+        <p style="color:var(--dim);margin:4px 0 0">declared in automations.toml; each firing is a normal run — receipts in activity.</p>
+        <table class="runs" style="margin-top:10px"><thead><tr><th>name</th><th>trigger</th><th>bot</th><th>last fired</th></tr></thead><tbody id="duties"></tbody></table>
         <h3 style="margin-top:10px">power policy</h3>
         <div class="toggles">
           <div><span>free-first router — free tier first, cheapest paid fallback</span><span class="switch"></span></div>
@@ -416,6 +419,9 @@ async function loadSettings() {
       <div class="ins">${p.installed ? 'installed ✓' : (p.install ? `<button class="pill" data-install="${esc(p.name)}" style="padding:4px 12px;font-size:11px">install</button>` : 'manual install')}</div>
     </div>`).join('');
   document.querySelectorAll('[data-install]').forEach(b => b.onclick = () => installEngine(b.dataset.install));
+  $('#duties').innerHTML = (state.duties || []).map(d =>
+    `<tr><td>${esc(d.name)}</td><td>${esc(d.trigger)}</td><td>${esc(d.bot || 'brood')}</td><td>${d.last_fired ? new Date(d.last_fired*1000).toLocaleTimeString() : '—'}</td></tr>`
+  ).join('') || '<tr><td colspan="4" style="color:var(--dim)">no automations.toml — schedules and file watches show up here</td></tr>';
   $('#providers').innerHTML = (state.providers || []).map(p =>
     `<tr><td>${esc(p.name)}</td><td>${esc(p.kind)}</td><td><span class="tag ${p.cost === 'free' ? 'done' : ''}">${esc(p.cost)}</span></td><td>${p.available ? 'ready' : 'not installed'}</td></tr>`
   ).join('') || '<tr><td colspan="4" style="color:var(--dim)">no providers.toml — echo stub answers until you add one</td></tr>';

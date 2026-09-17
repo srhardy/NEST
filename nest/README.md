@@ -45,9 +45,25 @@ Everything Spoke projects, the engine consumes:
 - **Themes** — `multi` / `fluro` / `mono`; all dark with white animated
   birds, and toasts/speech bubbles follow the theme too.
 
-Native chrome (taskbar icon, floating desktop birdy, OS notifications,
-1-click engine installs) arrives with the desktop wrapper — the web shell
-embeds unchanged inside it.
+- **Onboarding** — first run asks you to name your boss bot, pick its
+  abilities, and tick which engines to install; ticking one starts a
+  real install streamed as a run (`POST /api/onboarding`,
+  `POST /api/perches/install`).
+- **Providers** — `providers.toml` declares free/cheap/paid backends
+  (`command` or `ollama`); `forage`'s router tries available ones in
+  free-first order with failover (`GET /api/state`, `nest providers`,
+  `nest ask --provider x`).
+- **Routines** — `automations.toml` schedules (5-field cron, UTC) and
+  `file-change:` watches run as ordinary dispatches via the patrol;
+  armed triggers are listed under settings.
+- **Remotes** — the shell watches `~/.nest/remotes/<name>/inbox/*.md`:
+  each file is brood-dispatched and the reply written to
+  `outbox/<chat|channel>.txt`. The `remotes` package ships stdlib-only
+  bridges (telegram / slack / watch) that own the polling side.
+
+Native chrome (taskbar icon, floating desktop birdy, OS notifications)
+arrives with the desktop wrapper — the web shell embeds unchanged inside
+it.
 
 ## The `nest` CLI (Expert-mode passthrough)
 
@@ -58,7 +74,8 @@ nest hatch doc-keeper "sync readme"   # run one bot, peeps stream live
 nest brood "update the docs"          # brood picks: routing → boss → fallback
 nest roost                            # recent runs (receipts)
 nest imprint boss "first look"        # first verified run — 🐣 imprinted
-nest ask "prompt"                     # direct provider call (echo stub)
+nest ask "prompt"                     # routed provider call (free-first failover)
+nest providers                        # declared backends + readiness
 ```
 
 Flags: `--home` (personal `.nest/` dir, or `NEST_HOME`), `--cwd` (run
