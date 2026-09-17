@@ -147,7 +147,13 @@ pub(crate) fn codex_mcp_table(server: &spoke_core::manifest::McpServer) -> Strin
 }
 
 pub(crate) fn toml_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("\"{escaped}\"")
 }
 
 /// Telemetry beacons Spoke disables by default, honouring the complaints gathered in research.

@@ -204,21 +204,15 @@ def get_styles():
 # ---------------------------------------------------------------------------
 # PDF Builder
 # ---------------------------------------------------------------------------
-def _escape_tree(value):
-    """XML-escape every string in the report data so generated contract
-    text can't break (or inject) ReportLab paragraph markup."""
-    if isinstance(value, str):
-        return _xml_escape(value)
-    if isinstance(value, list):
-        return [_escape_tree(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _escape_tree(v) for k, v in value.items()}
-    return value
+def _esc(value):
+    """XML-escape a data value bound for a Paragraph — ReportLab treats
+    paragraph text as markup, so generated contract strings can't leak
+    <, > or & through unescaped. Table cells render verbatim: no escape."""
+    return _xml_escape(str(value))
 
 
 def build_pdf(data, output_path):
     """Build the PDF report from structured data."""
-    data = _escape_tree(data)
     styles = get_styles()
     doc = SimpleDocTemplate(
         output_path, pagesize=letter,
@@ -247,7 +241,7 @@ def build_pdf(data, output_path):
     grade = data.get("grade", "N/A")
     grade_label = data.get("grade_label", "")
     story.append(Paragraph(
-        f"Grade: {grade} — {grade_label}", styles["CoverSubtitle"]
+        f"Grade: {_esc(grade)} — {_esc(grade_label)}", styles["CoverSubtitle"]
     ))
 
     # Disclaimer
@@ -296,7 +290,7 @@ def build_pdf(data, output_path):
         width="100%", thickness=1, color=COLORS["light_border"]
     ))
     story.append(Paragraph(
-        data.get("executive_summary", "No summary available."),
+        _esc(data.get("executive_summary", "No summary available.")),
         styles["BodyText2"]
     ))
     story.append(Spacer(1, 20))
@@ -370,20 +364,20 @@ def build_pdf(data, output_path):
             clause_block = []
             clause_block.append(Paragraph(
                 f'<font color="{risk_color.hexval()}">[{risk_emoji}]</font> '
-                f'<b>{clause.get("name", "Unnamed Clause")}</b> — Section {clause.get("section", "N/A")}',
+                f'<b>{_esc(clause.get("name", "Unnamed Clause"))}</b> — Section {_esc(clause.get("section", "N/A"))}',
                 styles["SubHeader"]
             ))
             if clause.get("summary"):
                 clause_block.append(Paragraph(
-                    f'<b>What it says:</b> {clause["summary"]}', styles["BodyText2"]
+                    f'<b>What it says:</b> {_esc(clause["summary"])}', styles["BodyText2"]
                 ))
             if clause.get("risk_explanation"):
                 clause_block.append(Paragraph(
-                    f'<b>Why it matters:</b> {clause["risk_explanation"]}', styles["BodyText2"]
+                    f'<b>Why it matters:</b> {_esc(clause["risk_explanation"])}', styles["BodyText2"]
                 ))
             if clause.get("recommendation"):
                 clause_block.append(Paragraph(
-                    f'<b>Recommended change:</b> {clause["recommendation"]}', styles["BodyText2"]
+                    f'<b>Recommended change:</b> {_esc(clause["recommendation"])}', styles["BodyText2"]
                 ))
             clause_block.append(Spacer(1, 10))
             story.append(KeepTogether(clause_block))
@@ -396,7 +390,7 @@ def build_pdf(data, output_path):
             width="100%", thickness=1, color=COLORS["light_border"]
         ))
         for i, priority in enumerate(priorities, 1):
-            story.append(Paragraph(f"<b>{i}.</b> {priority}", styles["BodyText2"]))
+            story.append(Paragraph(f"<b>{i}.</b> {_esc(priority)}", styles["BodyText2"]))
         story.append(Spacer(1, 20))
 
     # ── Missing Protections ──
@@ -407,7 +401,7 @@ def build_pdf(data, output_path):
             width="100%", thickness=1, color=COLORS["light_border"]
         ))
         for item in missing:
-            story.append(Paragraph(f"• {item}", styles["BodyText2"]))
+            story.append(Paragraph(f"• {_esc(item)}", styles["BodyText2"]))
         story.append(Spacer(1, 20))
 
     # ── Next Steps ──
@@ -418,7 +412,7 @@ def build_pdf(data, output_path):
             width="100%", thickness=1, color=COLORS["light_border"]
         ))
         for i, step in enumerate(steps, 1):
-            story.append(Paragraph(f"<b>{i}.</b> {step}", styles["BodyText2"]))
+            story.append(Paragraph(f"<b>{i}.</b> {_esc(step)}", styles["BodyText2"]))
 
     # ── Footer Disclaimer ──
     story.append(Spacer(1, 40))
