@@ -147,12 +147,22 @@ pub(crate) fn codex_mcp_table(server: &spoke_core::manifest::McpServer) -> Strin
 }
 
 pub(crate) fn toml_string(value: &str) -> String {
-    let escaped = value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t");
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\u{0008}' => escaped.push_str("\\b"),
+            '\t' => escaped.push_str("\\t"),
+            '\n' => escaped.push_str("\\n"),
+            '\u{000C}' => escaped.push_str("\\f"),
+            '\r' => escaped.push_str("\\r"),
+            c if (c as u32) < 0x20 || c == '\u{007F}' => {
+                escaped.push_str(&format!("\\u{:04X}", c as u32));
+            }
+            c => escaped.push(c),
+        }
+    }
     format!("\"{escaped}\"")
 }
 
