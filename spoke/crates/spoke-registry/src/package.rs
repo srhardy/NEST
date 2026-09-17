@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// A package manifest (package.toml). Deliberately small: skills only, for now.
+/// A package manifest (package.toml): skills and/or agent (bot) definitions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PackageManifest {
     pub name: String,
@@ -18,16 +18,20 @@ pub struct PackageManifest {
     pub source: Source,
     #[serde(default)]
     pub skills: Vec<SkillSpec>,
+    /// Agent (bot) definitions shipped by this package — directories (or single
+    /// .md files) installed into each harness's agents root.
+    #[serde(default)]
+    pub agents: Vec<SkillSpec>,
     #[serde(default)]
     pub requires: Requires,
 }
 
 impl PackageManifest {
     pub fn load(path: &Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let manifest: Self = toml::from_str(&raw)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let raw =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let manifest: Self =
+            toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
         Ok(manifest)
     }
 
@@ -53,15 +57,17 @@ impl PackageManifest {
             bail!("package '{}' declares no version", self.name);
         }
         self.source.validate()?;
-        if self.skills.is_empty() {
+        if self.skills.is_empty() && self.agents.is_empty() {
             bail!(
-                "package '{}' declares no skills — add one or more [[skills]] entries (name + path)",
+                "package '{}' declares no skills or agents — add one or more [[skills]] or [[agents]] entries (name + path)",
                 self.name
             );
         }
-        for skill in &self.skills {
-            if skill.name.trim().is_empty() {
-                bail!("package '{}' has a skill with an empty name", self.name);
+        for (kind, specs) in [("skill", &self.skills), ("agent", &self.agents)] {
+            for spec in specs {
+                if spec.name.trim().is_empty() {
+                    bail!("package '{}' has a {kind} with an empty name", self.name);
+                }
             }
         }
         Ok(())
@@ -134,8 +140,8 @@ pub struct IndexEntry {
 
 impl Index {
     pub fn load(path: &Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let raw =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let index: Self =
             toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
         Ok(index)

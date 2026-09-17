@@ -367,9 +367,11 @@ name = "spoke-adapters"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde",
  "serde_json",
  "spoke-core",
  "tempfile",
+ "toml",
  "toml_edit",
 ]
 

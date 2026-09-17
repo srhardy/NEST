@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 
-use spoke_adapters::{find, registry, skill_install_op, Ctx};
+use spoke_adapters::{agent_install_op, find, registry, skill_install_op, Ctx};
 use spoke_core::ir::{Op, Plan};
 use spoke_core::lock::{Lock, LockedPackage};
 use spoke_core::{paths, Manifest};
@@ -79,6 +79,28 @@ enum Command {
         #[arg(long)]
         receipts: bool,
     },
+    /// Manage the bot roster declared in agent.toml
+    Bot {
+        #[command(subcommand)]
+        command: BotCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BotCommand {
+    /// List declared bots and their jobs
+    List,
+    /// Append a [[bots]] entry to agent.toml
+    Add {
+        /// kebab-case name; becomes .nest/agents/<name>.md
+        name: String,
+        /// The one job this bot is for (required — one bot, one job)
+        #[arg(long)]
+        job: String,
+        /// Display name in the roster
+        #[arg(long)]
+        title: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -93,9 +115,11 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let home = cli
-        .home
-        .unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default());
+    let home = cli.home.unwrap_or_else(|| {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+    });
     let project = match cli.project {
         Some(path) => path,
         None => std::env::current_dir().context("resolving the current directory")?,
@@ -114,6 +138,12 @@ fn run(cli: Cli) -> Result<()> {
         Command::Event { kind, detail } => event(&home, &kind, detail.as_deref()),
         Command::Hooks { uninstall } => hooks(&home, &project, uninstall),
         Command::Budget { receipts } => budget(&home, &project, receipts),
+        Command::Bot { command } => match command {
+            BotCommand::List => bot_list(&project),
+            BotCommand::Add { name, job, title } => {
+                bot_add(&project, &name, &job, title.as_deref())
+            }
+        },
     }
 }
 
@@ -258,6 +288,11 @@ fn doctor(home: &Path, project: &Path) -> Result<()> {
 
     if let Some(manifest) = &manifest {
         println!("  budget preset: {}", manifest.budget.preset);
+        println!(
+            "  bots declared: {}   automations declared: {}",
+            manifest.bots.len(),
+            manifest.automations.len()
+        );
     }
     let lock = Lock::load(project)?;
     println!("  packages installed: {}", lock.packages.len());
@@ -325,6 +360,7 @@ fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
 
     let materialized = store.fetch(&package)?;
     let skills = store.skill_files(&package, &materialized.dir)?;
+    let agents = store.agent_files(&package, &materialized.dir)?;
 
     let mut total_tokens = 0u64;
     let mut all_files: Vec<(String, String)> = Vec::new();
@@ -334,6 +370,19 @@ fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
         total_tokens += tokens;
         println!(
             "  skill '{skill}': {} file(s), ~{tokens} tokens (estimate)",
+            files.len()
+        );
+        for warning in &report.warnings {
+            println!("    scan: {warning}");
+        }
+        all_files.extend(files.clone());
+    }
+    for (agent, files) in &agents {
+        let report = scan::scan(files);
+        let tokens = spoke_registry::token_estimate(files);
+        total_tokens += tokens;
+        println!(
+            "  agent '{agent}': {} file(s), ~{tokens} tokens (estimate)",
             files.len()
         );
         for warning in &report.warnings {
@@ -395,6 +444,22 @@ fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
                     .to_string(),
             );
         }
+        for (agent, files) in &agents {
+            plan.push(agent_install_op(
+                harness.as_ref(),
+                home,
+                agent,
+                files.clone(),
+                &materialized.source_description,
+            ));
+            installed_paths.insert(
+                harness
+                    .agents_root(home)
+                    .join(agent)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
     }
 
     if targets.is_empty() {
@@ -418,14 +483,19 @@ fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
             integrity: Some(integrity.clone()),
             tokens: total_tokens,
             skills: skills.iter().map(|(name, _)| name.clone()).collect(),
+            agents: agents.iter().map(|(name, _)| name.clone()).collect(),
             installed_paths: installed_paths.iter().cloned().collect(),
         });
         lock.save(project)?;
     }
 
     println!(
-        "  {} {} skill director(ies) into {} — {}",
-        if dry_run { "would install" } else { "installed" },
+        "  {} {} director(ies) into {} — {}",
+        if dry_run {
+            "would install"
+        } else {
+            "installed"
+        },
         changed,
         targets.join(", "),
         if dry_run {
@@ -451,16 +521,15 @@ fn remove(home: &Path, project: &Path, name: &str) -> Result<()> {
         .cloned()
         .ok_or_else(|| anyhow!("package '{name}' is not installed"))?;
 
-    let mut paths: BTreeSet<PathBuf> = package
-        .installed_paths
-        .iter()
-        .map(PathBuf::from)
-        .collect();
+    let mut paths: BTreeSet<PathBuf> = package.installed_paths.iter().map(PathBuf::from).collect();
     if let Ok(manifest) = Manifest::load(project) {
         for id in &manifest.harnesses {
             if let Some(harness) = find(id) {
                 for skill in &package.skills {
                     paths.insert(harness.skills_root(home).join(skill));
+                }
+                for agent in &package.agents {
+                    paths.insert(harness.agents_root(home).join(agent));
                 }
             }
         }
@@ -492,13 +561,17 @@ fn list(project: &Path) -> Result<()> {
     }
     println!("Installed packages ({}):", lock.packages.len());
     for package in &lock.packages {
+        let mut parts = vec![format!("skills: {}", package.skills.join(", "))];
+        if !package.agents.is_empty() {
+            parts.push(format!("agents: {}", package.agents.join(", ")));
+        }
         println!(
-            "  {}@{}  ~{} tokens  {}  skills: {}",
+            "  {}@{}  ~{} tokens  {}  {}",
             package.name,
             package.version.as_deref().unwrap_or("?"),
             package.tokens,
             package.license.as_deref().unwrap_or("license unknown"),
-            package.skills.join(", ")
+            parts.join("  ")
         );
     }
     Ok(())
@@ -510,14 +583,30 @@ fn why(home: &Path, project: &Path, name: &str) -> Result<()> {
         .get(name)
         .ok_or_else(|| anyhow!("package '{name}' is not installed"))?;
 
-    println!("{}@{}", package.name, package.version.as_deref().unwrap_or("?"));
-    println!("  source:    {}", package.source.as_deref().unwrap_or("unknown"));
-    println!("  license:   {}", package.license.as_deref().unwrap_or("unknown"));
+    println!(
+        "{}@{}",
+        package.name,
+        package.version.as_deref().unwrap_or("?")
+    );
+    println!(
+        "  source:    {}",
+        package.source.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "  license:   {}",
+        package.license.as_deref().unwrap_or("unknown")
+    );
     println!("  tokens:    ~{} (estimate)", package.tokens);
     println!("  skills:    {}", package.skills.join(", "));
+    if !package.agents.is_empty() {
+        println!("  agents:    {}", package.agents.join(", "));
+    }
     for path in &package.installed_paths {
         let exists = Path::new(path).exists();
-        println!("  installed: {path} {}", if exists { "" } else { "(missing!)" });
+        println!(
+            "  installed: {path} {}",
+            if exists { "" } else { "(missing!)" }
+        );
     }
 
     // Verify the cached package content still matches the recorded integrity.
@@ -597,6 +686,91 @@ fn installed_skill_texts(project: &Path) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
+fn bot_list(project: &Path) -> Result<()> {
+    let manifest = Manifest::load(project)?;
+    if manifest.bots.is_empty() {
+        println!("No bots declared (add one with `spoke bot add <name> --job \"...\"`)");
+        return Ok(());
+    }
+    println!("Bots declared in agent.toml ({}):", manifest.bots.len());
+    for bot in &manifest.bots {
+        println!(
+            "  {}{}  — {}",
+            bot.name,
+            bot.title
+                .as_ref()
+                .map(|t| format!(" ({t})"))
+                .unwrap_or_default(),
+            bot.job
+        );
+    }
+    if !manifest.automations.is_empty() {
+        println!();
+        println!("Automations ({}):", manifest.automations.len());
+        for automation in &manifest.automations {
+            let trigger = automation
+                .schedule
+                .as_ref()
+                .map(|s| format!("schedule '{s}'"))
+                .or_else(|| automation.event.as_ref().map(|e| format!("event '{e}'")))
+                .unwrap_or_default();
+            println!(
+                "  {}  {}{}",
+                automation.name,
+                trigger,
+                automation
+                    .bot
+                    .as_ref()
+                    .map(|b| format!("  -> bot {b}"))
+                    .unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn bot_add(project: &Path, name: &str, job: &str, title: Option<&str>) -> Result<()> {
+    let manifest = Manifest::load(project)?;
+    if manifest.bots.iter().any(|b| b.name == name) {
+        anyhow::bail!("bot '{name}' is already declared in agent.toml");
+    }
+    let candidate = spoke_core::manifest::Bot {
+        name: name.to_string(),
+        title: title.map(|t| t.to_string()),
+        job: job.to_string(),
+        voice: Vec::new(),
+        anti_jobs: Vec::new(),
+        skills: Vec::new(),
+        mcp: Vec::new(),
+        model: None,
+        memory: Vec::new(),
+    };
+    candidate.validate()?;
+
+    // Append as raw TOML so the file's comments and formatting are preserved.
+    let manifest_path = project.join(spoke_core::MANIFEST_FILE);
+    let mut body = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    body.push_str("\n[[bots]]\n");
+    body.push_str(&format!("name = {}\n", toml_quote(name)));
+    if let Some(title) = title {
+        body.push_str(&format!("title = {}\n", toml_quote(title)));
+    }
+    body.push_str(&format!("job = {}\n", toml_quote(job)));
+    std::fs::write(&manifest_path, body)
+        .with_context(|| format!("writing {}", manifest_path.display()))?;
+
+    println!(
+        "Added bot '{name}' to {} — run `spoke sync` to render .nest/agents/{name}.md",
+        manifest_path.display()
+    );
+    Ok(())
+}
+
+fn toml_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 fn yes_no(value: bool) -> &'static str {
     if value {
         "yes"
@@ -642,8 +816,8 @@ fn read_events(home: &Path) -> Result<Vec<serde_json::Value>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     Ok(raw
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -719,7 +893,10 @@ fn hooks(home: &Path, project: &Path, uninstall: bool) -> Result<()> {
         targets.join(", ")
     );
     if changed > 0 {
-        println!("  backups: {}", paths::backups_dir(home, unix_secs()).display());
+        println!(
+            "  backups: {}",
+            paths::backups_dir(home, unix_secs()).display()
+        );
     }
     Ok(())
 }

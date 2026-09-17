@@ -19,10 +19,18 @@ pub struct Manifest {
     pub mcp: Vec<McpServer>,
     #[serde(default)]
     pub budget: Budget,
+    #[serde(default)]
+    pub bots: Vec<Bot>,
+    #[serde(default)]
+    pub automations: Vec<Automation>,
 }
 
 fn default_harnesses() -> Vec<String> {
-    vec!["claude-code".to_string(), "codex".to_string()]
+    vec![
+        "nest".to_string(),
+        "claude-code".to_string(),
+        "codex".to_string(),
+    ]
 }
 
 impl Default for Manifest {
@@ -34,6 +42,8 @@ impl Default for Manifest {
             skills: Vec::new(),
             mcp: Vec::new(),
             budget: Budget::default(),
+            bots: Vec::new(),
+            automations: Vec::new(),
         }
     }
 }
@@ -82,6 +92,113 @@ impl McpServer {
     }
 }
 
+/// A bot definition. The Nest harness projects each into
+/// `.nest/agents/<name>.md`; other harnesses warn (they have no roster file yet).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Bot {
+    /// kebab-case id — also the generated filename (`<name>.md`).
+    pub name: String,
+    /// Display name shown in the roster (defaults to `name`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The one job this bot is for. One job, no scope creep.
+    #[serde(default)]
+    pub job: String,
+    /// Persona lines — the body of the generated agent file.
+    #[serde(default)]
+    pub voice: Vec<String>,
+    /// Explicit "not my job" list — keeps the bot in its lane.
+    #[serde(default)]
+    pub anti_jobs: Vec<String>,
+    /// Skill names this bot carries.
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// MCP server names this bot may use (entries from `[[mcp]]`).
+    #[serde(default)]
+    pub mcp: Vec<String>,
+    /// Model tier hint (concise | balanced | full — mirrors budget.preset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Knowledge notes seeded into the bot.
+    #[serde(default)]
+    pub memory: Vec<String>,
+}
+
+impl Bot {
+    /// Bot names become filenames; keep them lowercase-kebab and path-safe.
+    pub fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            anyhow::bail!("bot has an empty name");
+        }
+        if !self
+            .name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        {
+            anyhow::bail!(
+                "bot name '{}' must be lowercase-kebab (a-z, 0-9, '-', '_') — it becomes a filename",
+                self.name
+            );
+        }
+        if self.job.trim().is_empty() {
+            anyhow::bail!(
+                "bot '{}' must declare a job — one sentence, one job",
+                self.name
+            );
+        }
+        Ok(())
+    }
+}
+
+/// A trigger-driven run (Devin-style automation), projected to
+/// `.nest/automations.toml` by the Nest harness.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Automation {
+    pub name: String,
+    /// Cron expression (5 fields) for recurring runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+    /// Event trigger, e.g. \"file-change:src/**\". Free-form for now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    /// What the run should do.
+    #[serde(default)]
+    pub prompt: String,
+    /// Optional `[[bots]]` name to run as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Automation {
+    pub fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            anyhow::bail!("automation has an empty name");
+        }
+        if self.schedule.is_some() == self.event.is_some() {
+            anyhow::bail!(
+                "automation '{}' must set exactly one of `schedule` (cron) or `event`",
+                self.name
+            );
+        }
+        if let Some(schedule) = &self.schedule {
+            if schedule.split_whitespace().count() != 5 {
+                anyhow::bail!(
+                    "automation '{}' schedule '{}' is not a 5-field cron expression",
+                    self.name,
+                    schedule
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Budget {
     #[serde(default = "default_preset")]
@@ -103,8 +220,8 @@ impl Default for Budget {
 impl Manifest {
     pub fn load(project: &Path) -> Result<Self> {
         let path = project.join(MANIFEST_FILE);
-        let raw =
-            std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let raw = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
         let manifest: Manifest =
             toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
         Ok(manifest)
@@ -125,6 +242,35 @@ impl Manifest {
         for server in &self.mcp {
             server.validate()?;
         }
+        for bot in &self.bots {
+            bot.validate()?;
+        }
+        for automation in &self.automations {
+            automation.validate()?;
+        }
+        for (kind, names) in [
+            (
+                "bot",
+                self.bots
+                    .iter()
+                    .map(|b| b.name.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "automation",
+                self.automations
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+        ] {
+            let mut seen = std::collections::HashSet::new();
+            for name in names {
+                if !seen.insert(name) {
+                    anyhow::bail!("duplicate {kind} name '{name}'");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -137,7 +283,7 @@ pub const TEMPLATE: &str = r#"# agent.toml — Spoke manifest. One file, every h
 version = 1
 
 # Harnesses Spoke projects this manifest into.
-harnesses = ["claude-code", "codex"]
+harnesses = ["nest", "claude-code", "codex"]
 
 # Skill packages. Installed by the packages spoke (M1) via `spoke add <name>`.
 skills = []
@@ -156,4 +302,21 @@ extra = []
 # Token/context policy for the budget spoke (M2).
 [budget]
 preset = "balanced"   # concise | balanced | full
+
+# Bots — your roster. Nest projects each into .nest/agents/<name>.md.
+# [[bots]]
+# name = "eggbot"
+# title = "Dr. Eggbot"
+# job = "Walks you through building a bot, then writes it"
+# voice = ["You are a friendly bot-builder who asks one question at a time."]
+# anti_jobs = ["Do not write application code", "Do not browse the web"]
+# model = "balanced"
+
+# Automations — trigger-driven runs. Exactly one of `schedule` (5-field cron)
+# or `event`; Nest projects them into .nest/automations.toml.
+# [[automations]]
+# name = "morning-triage"
+# schedule = "0 9 * * *"
+# prompt = "Summarize yesterday's changes"
+# bot = "eggbot"
 "#;

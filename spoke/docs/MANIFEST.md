@@ -34,12 +34,34 @@ args = ["mcp", "fetch"]
 # Token/context policy. Stored today; enforcement lands with the budget work.
 [budget]
 preset = "balanced"   # concise | balanced | full
+
+# Bots — the roster. Nest renders each into .nest/agents/<name>.md
+# (YAML frontmatter + persona body, fully Spoke-owned).
+[[bots]]
+name = "eggbot"
+title = "Dr. Eggbot"
+job = "Walks you through building a bot, then writes it"
+voice = ["You are a friendly bot-builder who asks one question at a time."]
+anti_jobs = ["Do not write application code"]
+skills = ["bot-authoring"]        # skill names — warns if undeclared
+mcp = ["spoke-fetch"]            # [[mcp]] names — warns if undeclared
+model = "balanced"               # concise | balanced | full (hint)
+memory = ["Templates live in the catalog"]
+
+# Automations — trigger-driven runs. Exactly one of `schedule` or `event`.
+# Nest renders them into .nest/automations.toml (fully Spoke-owned).
+[[automations]]
+name = "morning-triage"
+schedule = "0 9 * * *"            # 5-field cron
+prompt = "Summarize yesterday's changes"
+bot = "eggbot"                    # optional [[bots]] name — warns if undeclared
+enabled = true
 ```
 
 | Field | Type | Required | Default | What `spoke sync` does with it |
 |---|---|---|---|---|
 | `version` | integer | yes | — | Validated; must be `1` |
-| `harnesses` | string[] | no | `["claude-code", "codex"]` | Each entry is resolved to an adapter; enabled-but-not-detected harnesses are skipped with a note |
+| `harnesses` | string[] | no | `["nest", "claude-code", "codex"]` | Each entry is resolved to an adapter; enabled-but-not-detected harnesses are skipped with a note |
 | `skills` | table[] | no | `[]` | **Reserved** — a non-empty list produces a warning; use `spoke add` |
 | `instructions.extra` | string[] | no | `[]` | Written into the marked block of each harness's instruction file (Codex: `AGENTS.md`; Claude Code: `CLAUDE.md`, which imports `AGENTS.md`) |
 | `mcp[]` | table[] | no | `[]` | Merged into each harness's native MCP config |
@@ -47,12 +69,30 @@ preset = "balanced"   # concise | balanced | full
 | `mcp[].command` / `args` | string / string[] | one of | — | stdio server |
 | `mcp[].url` | string | one of | — | remote server |
 | `budget.preset` | string | no | `"balanced"` | Shown by `doctor`/`budget` |
+| `bots[]` | table[] | no | `[]` | Nest: rendered to `.nest/agents/<name>.md` |
+| `bots[].name` | string | yes | — | lowercase-kebab (a-z, 0-9, `-`, `_`); becomes the filename |
+| `bots[].job` | string | yes | — | The one job this bot is for; empty is an error |
+| `bots[].title` / `voice` / `anti_jobs` / `memory` | string / string[] | no | — | Display name, persona lines, not-my-job list, seeded notes |
+| `bots[].skills` / `mcp` | string[] | no | `[]` | Names resolved against `skills[]`/`[[mcp]]`; dangling refs warn |
+| `bots[].model` | string | no | — | Model tier hint (`concise`/`balanced`/`full`) |
+| `automations[]` | table[] | no | `[]` | Nest: rendered to `.nest/automations.toml` |
+| `automations[].name` | string | yes | — | Unique across automations |
+| `automations[].schedule` / `event` | string | one of | — | 5-field cron, or a free-form event string |
+| `automations[].prompt` | string | yes-ish | `""` | What the run does |
+| `automations[].bot` | string | no | — | `[[bots]]` name to run as; dangling ref warns |
+| `automations[].enabled` | bool | no | `true` | Rendered into the file; the runner honours it |
 
 **Validation rules**
 
 | Rule | Error |
 |---|---|
 | `mcp[].command` XOR `mcp[].url` | `mcp server 'x' must set exactly one of command (stdio) or url (remote)` |
+| `bots[].name` lowercase-kebab | `bot name 'x' must be lowercase-kebab … it becomes a filename` |
+| `bots[].job` non-empty | `bot 'x' must declare a job — one sentence, one job` |
+| `bots[].name` unique | `duplicate bot name 'x'` |
+| `automations[].schedule` XOR `event` | `automation 'x' must set exactly one of schedule (cron) or event` |
+| `automations[].schedule` 5 fields | `automation 'x' schedule 'y' is not a 5-field cron expression` |
+| `automations[].name` unique | `duplicate automation name 'x'` |
 | Unknown harness id | reported during sync, skipped |
 | Unknown top-level keys | ignored (forward compatible) |
 
@@ -78,6 +118,10 @@ path = "./src"                    # or: git = "https://github.com/…"; optional
 name = "answer-first"
 path = "."                        # relative to [source]; defaults to "."
 
+[[agents]]                        # bot definitions — directories or single .md files
+name = "eggbot"
+path = "agents/eggbot"
+
 [requires]                        # reserved; non-empty produces a note at install time
 mcp = []
 ```
@@ -90,11 +134,11 @@ mcp = []
 | `tier` | no | Informational; mirrors the tiering convention used by existing catalogs |
 | `source.path` | one of | Relative paths resolve against the manifest's own directory. Copied into the store at install time (source edits never mutate an installed copy) |
 | `source.git` (+`rev`) | one of | `git clone --depth 1 [--branch rev]` |
-| `skills[]` | yes (≥1) | Each skill becomes one directory per harness |
-| `skills[].path` | no | Skill directory relative to the fetched source root |
+| `skills[]` / `agents[]` | yes (≥1 combined) | Each becomes one directory per harness (skills → skills root, agents → agents root) |
+| `skills[].path` / `agents[].path` | no | Directory relative to the fetched source root; an agent path may also be a single file |
 | `requires.mcp` | no | **Reserved** — printed as "not wired yet" |
 
-**Validation errors:** empty name/version · no source · both `path` and `git` · no skills · empty skill name · skill path missing in source.
+**Validation errors:** empty name/version · no source · both `path` and `git` · no skills and no agents · empty skill/agent name · skill/agent path missing in source.
 
 **Install semantics**
 
@@ -141,6 +185,7 @@ manifest = "packages/answer-first/package.toml"   # relative to the index direct
       "integrity": "sha256:512305af…",
       "tokens": 75,
       "skills": ["answer-first"],
+      "agents": ["eggbot"],
       "installed_paths": [
         "/Users/you/.claude/skills/answer-first",
         "/Users/you/.codex/skills/answer-first"
@@ -156,6 +201,7 @@ manifest = "packages/answer-first/package.toml"   # relative to the index direct
 | `tokens` | Estimated context cost (bytes/4) |
 | `installed_paths` | Exact directories Spoke created — this is what `spoke remove` deletes (moves to backups) |
 | `skills` | Skill names, used for overlap detection and cleanup |
+| `agents` | Agent (bot) names installed by the package, shown by `list`/`why` and removed with it |
 
 **Uninstall contract:** removing a package deletes only paths recorded here (plus the same paths re-derived from currently enabled harnesses), moves them into `~/.spoke/backups/`, and drops the lock entry. Nothing else is touched.
 
@@ -177,6 +223,10 @@ manifest = "packages/answer-first/package.toml"   # relative to the index direct
 ├── AGENTS.md         # marked block only
 ├── .mcp.json         # merged keys only
 └── .claude/settings.json   # merged keys only (env, hooks)
+
+.nest/                # Nest's surface (project-scoped where shown)
+├── agents/<name>.md  # generated from [[bots]] — Spoke-owned, edit agent.toml
+└── automations.toml  # generated from [[automations]] — Spoke-owned
 ```
 
 ---
