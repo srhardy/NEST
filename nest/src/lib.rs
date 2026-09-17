@@ -22,6 +22,7 @@
 
 pub mod brood;
 pub mod clutch;
+pub mod feather;
 pub mod forage;
 pub mod hatchling;
 pub mod home;

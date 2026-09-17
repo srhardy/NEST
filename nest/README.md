@@ -64,6 +64,11 @@ Everything Spoke projects, the engine consumes:
 - **Daemon** — `nest daemon` runs the watchers (patrol + remotes) with
   no HTTP at all: the launchd/systemd unit for "bots that work while
   the lid is closed"; receipts still land in the roost.
+- **Feather** — `nest feather <run-id>` distills a finished run into a
+  reusable `~/.nest/skills/<name>/SKILL.md` — provenance frontmatter
+  (`authored-by`, `run`) records which bot earned it; another bot picks
+  it up by listing `skills: [name]` in its frontmatter. The roster gets
+  smarter with use.
 - **Remotes** — the shell watches `~/.nest/remotes/<name>/inbox/*.md`:
   each file is brood-dispatched and the reply written to
   `outbox/<chat|channel>.txt`. The `remotes` package ships stdlib-only
@@ -85,6 +90,7 @@ nest roost                            # recent runs (receipts)
 nest imprint boss "first look"        # first verified run — 🐣 imprinted
 nest ask "prompt"                     # routed provider call (free-first failover)
 nest providers                        # declared backends + readiness
+nest feather <run-id> [--name slug]   # distill a run into a skill
 ```
 
 Flags: `--home` (personal `.nest/` dir, or `NEST_HOME`), `--cwd` (run

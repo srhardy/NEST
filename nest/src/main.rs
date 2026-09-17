@@ -73,6 +73,14 @@ enum Cmd {
     },
     /// Headless runtime — patrol + remotes with no UI. For launchd/systemd.
     Daemon,
+    /// Distill a finished run into a reusable skill (~/.nest/skills/<name>/SKILL.md).
+    Feather {
+        /// Run id (or unique prefix) from `nest roost`.
+        run_id: String,
+        /// Skill name (default: derived from the bot + run).
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 fn peep_line(bot: &str, peep: &Peep) -> Option<String> {
@@ -266,6 +274,11 @@ fn main() -> Result<()> {
         Cmd::Shell { port } => {
             let (dirs, cwd) = resolve(&cli)?;
             nest::shell::serve(dirs, cwd, *port)?;
+        }
+        Cmd::Feather { run_id, name } => {
+            let (dirs, _) = resolve(&cli)?;
+            let dir = nest::feather::feather(&dirs, run_id, name.as_deref())?;
+            println!("feathered {}", dir.display());
         }
         Cmd::Daemon => {
             let (dirs, cwd) = resolve(&cli)?;
