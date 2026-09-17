@@ -51,8 +51,9 @@ pub trait Perch: Send + Sync {
     }
 }
 
-/// PATH lookup — is `bin` an *executable* file somewhere on PATH?
-fn which(bin: &str) -> Option<PathBuf> {
+/// PATH lookup honoring PATHEXT on Windows — the shared "is this
+/// executable installed" check for perches and providers.
+pub fn which(bin: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|paths| {
         env::split_paths(&paths)
             .find_map(|dir| candidates(&dir, bin).into_iter().find(|c| is_executable(c)))
