@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -23,6 +24,10 @@ pub struct Manifest {
     pub bots: Vec<Bot>,
     #[serde(default)]
     pub automations: Vec<Automation>,
+    #[serde(default)]
+    pub routing: Vec<Route>,
+    #[serde(default)]
+    pub services: Vec<Service>,
 }
 
 fn default_harnesses() -> Vec<String> {
@@ -44,6 +49,8 @@ impl Default for Manifest {
             budget: Budget::default(),
             bots: Vec::new(),
             automations: Vec::new(),
+            routing: Vec::new(),
+            services: Vec::new(),
         }
     }
 }
@@ -122,6 +129,106 @@ pub struct Bot {
     /// Knowledge notes seeded into the bot.
     #[serde(default)]
     pub memory: Vec<String>,
+    /// Lifecycle mode: `subagent` bots spool on demand, return results, and
+    /// auto-cleanup (the council); `primary` bots are foreground conversants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<BotMode>,
+    /// Per-tool permission policy, e.g. `permissions = { bash = "ask", read = "allow" }`.
+    /// Missing tools are decided by the harness, not by Spoke.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub permissions: BTreeMap<String, ToolPolicy>,
+    /// Marks the boss bot — the default receiver for un-routed intents and the
+    /// delegator to the council. At most one bot may set `boss = true`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub boss: bool,
+    /// Step budget for a single run (Bob-style `steps:` guardrail).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<u32>,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+/// How a bot runs when invoked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BotMode {
+    /// Foreground conversant — the user talks to it directly.
+    Primary,
+    /// Spools as a delegated subtask with scoped permissions, returns results,
+    /// and auto-cleans up (the council).
+    Subagent,
+}
+
+/// What a bot may do with a given tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolPolicy {
+    Allow,
+    Ask,
+    Deny,
+}
+
+/// An intent-dispatch rule: when a task matches `patterns`, route it to `bot`.
+/// The Boss pattern — the boss bot consults this table to delegate to the
+/// council. Rendered to `.nest/routing.toml` by the Nest harness.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Route {
+    /// Keywords / patterns that trigger this route.
+    #[serde(default)]
+    pub patterns: Vec<String>,
+    /// Target `[[bots]]` name.
+    pub bot: String,
+    /// Escalation ladder — bot names tried in order if the target fails.
+    #[serde(default)]
+    pub fallback: Vec<String>,
+}
+
+impl Route {
+    pub fn validate(&self) -> Result<()> {
+        if self.patterns.is_empty() {
+            anyhow::bail!(
+                "route for bot '{}' has no patterns — add at least one",
+                self.bot
+            );
+        }
+        if self.bot.trim().is_empty() {
+            anyhow::bail!("route has an empty bot name");
+        }
+        for f in &self.fallback {
+            if f.trim().is_empty() {
+                anyhow::bail!("route for bot '{}' has an empty fallback entry", self.bot);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A declared external service the project depends on (memory layer, crawler,
+/// autonomous worker…). Rendered to `.nest/services.toml` so the app can start
+/// and health-check them — the orchestrate.sh table as data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Service {
+    pub name: String,
+    /// TCP port the service listens on (localhost).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Health-check path, e.g. `/api/v1/stats/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
+    /// Command used to start the service when it is down.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+}
+
+impl Service {
+    pub fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            anyhow::bail!("service has an empty name");
+        }
+        Ok(())
+    }
 }
 
 impl Bot {
@@ -248,6 +355,15 @@ impl Manifest {
         for automation in &self.automations {
             automation.validate()?;
         }
+        for route in &self.routing {
+            route.validate()?;
+        }
+        for service in &self.services {
+            service.validate()?;
+        }
+        if self.bots.iter().filter(|b| b.boss).count() > 1 {
+            anyhow::bail!("at most one bot may be marked `boss = true`");
+        }
         for (kind, names) in [
             (
                 "bot",
@@ -261,6 +377,13 @@ impl Manifest {
                 self.automations
                     .iter()
                     .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "service",
+                self.services
+                    .iter()
+                    .map(|s| s.name.as_str())
                     .collect::<Vec<_>>(),
             ),
         ] {
@@ -304,6 +427,10 @@ extra = []
 preset = "balanced"   # concise | balanced | full
 
 # Bots — your roster. Nest projects each into .nest/agents/<name>.md.
+# `boss = true` marks the orchestrator (at most one): it receives un-routed
+# intents and delegates to the council via [[routing]]. `mode = "subagent"`
+# bots spool on demand and auto-clean. `permissions` sets per-tool policy
+# (allow | ask | deny); `max_steps` is a per-run step budget.
 # [[bots]]
 # name = "eggbot"
 # title = "Dr. Eggbot"
@@ -311,6 +438,25 @@ preset = "balanced"   # concise | balanced | full
 # voice = ["You are a friendly bot-builder who asks one question at a time."]
 # anti_jobs = ["Do not write application code", "Do not browse the web"]
 # model = "balanced"
+# mode = "primary"
+# boss = true
+# max_steps = 30
+# permissions = { bash = "ask", edit = "ask", read = "allow" }
+
+# Routing — the Boss's dispatch table: keywords/patterns -> bot, with an
+# optional escalation ladder (`fallback` bots tried in order on failure).
+# [[routing]]
+# patterns = ["debug", "fix bug", "stack trace", "crash"]
+# bot = "debugger"
+# fallback = ["council"]
+
+# Services — external daemons the project depends on. Rendered to
+# .nest/services.toml so the app can start and health-check them.
+# [[services]]
+# name = "openmemory"
+# port = 8765
+# health = "/api/v1/stats/"
+# start = "docker compose -f ~/mem0/openmemory up -d"
 
 # Automations — trigger-driven runs. Exactly one of `schedule` (5-field cron)
 # or `event`; Nest projects them into .nest/automations.toml.

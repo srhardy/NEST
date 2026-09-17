@@ -232,6 +232,23 @@ counts, and a git-managed `.devin/blueprint.yaml` for the Rust toolchain.
 Remaining known gap: removing a `[[bots]]` entry doesn't delete the rendered
 `.nest/agents/<name>.md` yet (warned, not silent).
 
+**SHIPPED (PR #3) — "Bob the Boss" phase:** BobTheBuilder folded into the
+schema and packaged as NEST's first council —
+1. `bots[].permissions` (per-tool `allow`/`ask`/`deny`), `bots[].mode`
+   (`primary`/`subagent` — subagents spool, return, auto-clean), `bots[].boss`
+   (max one orchestrator), `bots[].max_steps` — all rendered into the
+   `.nest/agents/<name>.md` frontmatter, mirroring Bob's agent format.
+2. `[[routing]]` → `.nest/routing.toml` — the Boss's dispatch table
+   (patterns → bot + `fallback` escalation ladder), modeled on Bob's
+   auto-detection routing.
+3. `[[services]]` → `.nest/services.toml` — declared daemons
+   (name/port/health/start) the app can boot and health-check, modeled on
+   Bob's `orchestrate.sh` service table.
+4. `packages/bob-council/` — a path-sourced package shipping BobTheBuilder's
+   8 specialist agents (converted to NEST format, permission maps intact)
+   + 6 skills → `spoke add packages/bob-council` installs the council into
+   `~/.nest/`. Scan warnings (network refs, host script) surface as designed.
+
 ---
 
 ## 7. Track C — Eggbot + the bot platform
