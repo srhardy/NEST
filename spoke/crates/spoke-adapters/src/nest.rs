@@ -252,7 +252,7 @@ fn render_bot_md(bot: &Bot) -> String {
                 ToolPolicy::Ask => "ask",
                 ToolPolicy::Deny => "deny",
             };
-            out.push_str(&format!("  {tool}: {policy}\n"));
+            out.push_str(&format!("  {}: {policy}\n", toml_string(tool)));
         }
     }
     if !bot.skills.is_empty() {
