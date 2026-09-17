@@ -79,7 +79,7 @@ fn shell_state_and_runs() {
         .iter()
         .map(|a| a["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["bigbird", "doc-keeper"]);
+    assert_eq!(names, ["bigbird", "doc-keeper", "eggbot"]);
     assert!(v["perches"]
         .as_array()
         .unwrap()
@@ -95,6 +95,58 @@ fn shell_state_and_runs() {
     );
     let s = http(port, "GET", "/api/settings", None);
     assert!(s.contains("# hi"));
+}
+
+#[test]
+fn eggbot_interview_builds_a_bot() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let port = start(&home, t.path());
+
+    // eggbot is seeded into the roster
+    let state = http(port, "GET", "/api/state", None);
+    assert!(state.contains("eggbot"), "eggbot not seeded: {state}");
+
+    let start = http(port, "POST", "/api/interview/start", Some("{}"));
+    let session = serde_json::from_str::<serde_json::Value>(&start).unwrap()["session"]
+        .as_u64()
+        .unwrap();
+
+    let answer = |a: &str| -> String {
+        http(
+            port,
+            "POST",
+            "/api/interview/answer",
+            Some(&format!(r#"{{"session":{session},"answer":"{a}"}}"#)),
+        )
+    };
+    assert!(answer("Bad Name!!").contains("error")); // rejects non-kebab
+    answer("pr-reviewer");
+    answer("reviews pull requests");
+    answer("precise");
+    let r = answer("reader");
+    assert!(r.contains("permissions"), "draft missing perms: {r}");
+    let done = answer("build it");
+    assert!(done.contains("\"done\":true"), "{done}");
+
+    let built = http(
+        port,
+        "POST",
+        "/api/interview/build",
+        Some(&format!(r#"{{"session":{session}}}"#)),
+    );
+    assert!(built.contains("pr-reviewer"), "{built}");
+
+    // the new bot is on disk, in manifest format the engine loads
+    let file = home.join("agents/pr-reviewer.md");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.contains("name: pr-reviewer") && text.contains("read: allow"),
+        "{text}"
+    );
+
+    let state = http(port, "GET", "/api/state", None);
+    assert!(state.contains("pr-reviewer"), "bot not in roster: {state}");
 }
 
 #[test]

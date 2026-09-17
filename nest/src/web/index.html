@@ -173,6 +173,22 @@
         <table class="runs"><thead><tr><th>run</th><th>bot</th><th>status</th><th>steps</th><th>secs</th></tr></thead><tbody id="runs"></tbody></table>
       </div>
     </div>
+    <div class="pane" id="pane-interview">
+      <div class="scroll" style="display:flex;gap:24px">
+        <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+          <div class="chatlog" id="iv-log" style="padding:6px 0"></div>
+          <div class="chatin" style="border-top:none;padding-left:0">
+            <input id="iv-input" placeholder="answer eggbot…" autocomplete="off">
+            <button id="iv-send">answer</button>
+          </div>
+        </div>
+        <div style="width:320px;flex-shrink:0">
+          <h3>preview — the file it writes</h3>
+          <pre id="iv-draft" style="margin-top:10px;background:var(--card);border:1px solid var(--edge);border-radius:12px;padding:14px;color:var(--text);font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap"></pre>
+          <button class="pill" id="iv-build" style="display:none;margin-top:10px;padding:8px 18px">🐣 build it</button>
+        </div>
+      </div>
+    </div>
     <div class="pane" id="pane-settings">
       <div class="scroll">
         <h3>settings — backed by <span id="settings-path" style="color:var(--dim)"></span></h3>
@@ -214,7 +230,7 @@
 <script>
 const $ = s => document.querySelector(s);
 const birdSvg = () => document.getElementById('tpl-bird').content.cloneNode(true);
-const state = { agents: [], perches: [], chatBot: null, tab: 'chat' };
+const state = { agents: [], perches: [], chatBot: null, tab: 'chat', interviewing: false, session: null };
 const PALETTE = ['#b98bff','#fb923c','#38bdf8','#f472b6','#2dd4bf','#a3e635','#facc15','#f87171'];
 
 async function api(path, body) {
@@ -252,8 +268,9 @@ function renderTabs() {
   const tabs = [
     ['chat', state.chatBot ? `chat — ${state.chatBot}` : 'ask the nest', state.chatBot],
     ['activity', 'activity', null],
-    ['settings', 'settings', null],
   ];
+  if (state.interviewing) tabs.push(['interview', '🥚 eggbot', 'eggbot']);
+  tabs.push(['settings', 'settings', null]);
   for (const [id, label, bot] of tabs) {
     const b = document.createElement('button');
     b.className = 'tab' + (state.tab === id ? ' active' : '') + (bot ? ' tab-bot' : '');
@@ -381,7 +398,58 @@ $('#theme').onchange = e => {
 document.body.dataset.theme = localStorage.getItem('nest-theme') || 'multi';
 $('#theme').value = document.body.dataset.theme;
 $('#mode').onclick = e => { e.target.textContent = e.target.textContent === 'guided' ? 'expert' : 'guided'; };
-$('#addbot').onclick = () => switchPane('settings');  // eggbot interview lands with the shell's next pass
+$('#addbot').onclick = startInterview;
+
+function ivMsg(text, cls) {
+  const m = document.createElement('div');
+  m.className = `msg ${cls}`;
+  if (cls !== 'me') { const b = birdSvg(); b.querySelector('.zzz')?.remove(); m.appendChild(b); }
+  const bub = document.createElement('div'); bub.className = 'bub';
+  bub.innerHTML = `<div class="who">${cls === 'me' ? 'you' : 'eggbot'}</div><div class="txt"></div>`;
+  bub.querySelector('.txt').textContent = text;
+  m.appendChild(bub);
+  $('#iv-log').appendChild(m);
+  $('#iv-log').scrollTop = 1e9;
+}
+
+async function startInterview() {
+  state.interviewing = true;
+  $('#iv-log').innerHTML = '';
+  const r = await api('/api/interview/start', {});
+  state.session = r.session;
+  ivMsg('hello! I build bots. four questions and yours joins the roster.', 'bot');
+  ivMsg(r.question, 'bot');
+  switchPane('interview');
+  $('#iv-input').focus();
+}
+
+async function ivSend() {
+  const answer = $('#iv-input').value.trim();
+  if (!answer) return;
+  $('#iv-input').value = '';
+  ivMsg(answer, 'me');
+  const r = await api('/api/interview/answer', { session: state.session, answer });
+  if (r.draft) $('#iv-draft').textContent = r.draft;
+  if (r.error) { ivMsg(r.error + ' — try again', 'bot'); return; }
+  if (r.done) { $('#iv-build').style.display = ''; ivMsg('all set — hit build it, or keep editing by answering', 'bot'); return; }
+  if (r.question) ivMsg(r.question, 'bot');
+}
+
+async function ivBuild() {
+  const r = await api('/api/interview/build', { session: state.session });
+  if (r.error) { ivMsg('could not build: ' + r.error, 'bot'); return; }
+  toast(`${r.built} hatched — joined the roster`);
+  state.interviewing = false;
+  $('#iv-build').style.display = 'none';
+  await refresh();
+  state.chatBot = r.built;
+  renderChatHint();
+  switchPane('chat');
+}
+
+$('#iv-send').onclick = ivSend;
+$('#iv-input').addEventListener('keydown', e => { if (e.key === 'Enter') ivSend(); });
+$('#iv-build').onclick = ivBuild;
 $('#send').onclick = send;
 $('#task').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 

@@ -6,7 +6,7 @@
 //! wrapper that adds native chrome (taskbar, desktop birdy) embeds this
 //! same page later — nothing here assumes a browser.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
@@ -54,11 +54,90 @@ impl Run {
     }
 }
 
+/// One eggbot interview in flight — the walk-through that builds a bot.
+/// Deterministic Q&A (name → job → voice → permissions → preview); the
+/// draft card shows exactly the file that will be written, so building is
+/// never a surprise.
+#[derive(Default)]
+struct Interview {
+    step: usize,
+    name: String,
+    title: String,
+    job: String,
+    voice: String,
+    profile: String,
+}
+
+impl Interview {
+    fn question(&self) -> &'static str {
+        match self.step {
+            0 => "what should we call it? (one word, like pr-reviewer)",
+            1 => "nice. what's its one job?",
+            2 => "how should it talk? (friendly / precise / blunt — or describe it)",
+            3 => "what can it touch? (reader / writer / full)",
+            _ => "preview looks right? say 'build it' (or change anything first)",
+        }
+    }
+
+    fn permissions(&self) -> BTreeMap<String, &'static str> {
+        let mut p = BTreeMap::new();
+        match self.profile.as_str() {
+            "writer" => {
+                p.insert("read".into(), "allow");
+                p.insert("write".into(), "allow");
+                p.insert("edit".into(), "allow");
+                p.insert("bash".into(), "ask");
+            }
+            "full" => {
+                p.insert("read".into(), "allow");
+                p.insert("write".into(), "allow");
+                p.insert("edit".into(), "allow");
+                p.insert("bash".into(), "allow");
+            }
+            _ => {
+                p.insert("read".into(), "allow");
+                p.insert("write".into(), "deny");
+                p.insert("edit".into(), "deny");
+                p.insert("bash".into(), "deny");
+            }
+        }
+        p
+    }
+
+    /// The exact file content — the preview card renders this verbatim.
+    fn draft(&self) -> String {
+        let mut fm = String::new();
+        if !self.name.is_empty() {
+            fm.push_str(&format!("name: {}\n", self.name));
+        }
+        if !self.title.is_empty() {
+            fm.push_str(&format!("title: \"{}\"\n", self.title));
+        }
+        if !self.job.is_empty() {
+            fm.push_str(&format!("job: \"{}\"\n", self.job.replace('"', "'")));
+        }
+        let perms = self.permissions();
+        if !perms.is_empty() {
+            fm.push_str("permissions:\n");
+            for (tool, policy) in perms {
+                fm.push_str(&format!("  {tool}: {policy}\n"));
+            }
+        }
+        let body = if self.voice.is_empty() {
+            String::new()
+        } else {
+            format!("You are {}. {}.", self.name, self.voice)
+        };
+        format!("---\n{fm}---\n\n{body}\n")
+    }
+}
+
 /// Shared shell state.
 pub struct Shell {
     dirs: NestDirs,
     cwd: PathBuf,
     runs: Mutex<HashMap<String, Arc<Run>>>,
+    interviews: Mutex<HashMap<u64, Interview>>,
     seq: Mutex<u64>,
 }
 
@@ -68,8 +147,95 @@ impl Shell {
             dirs,
             cwd,
             runs: Mutex::new(HashMap::new()),
+            interviews: Mutex::new(HashMap::new()),
             seq: Mutex::new(0),
         }
+    }
+
+    /// Seed the in-house bot: if the roster has no `eggbot`, write one to
+    /// the personal agents dir. A project `.nest/` eggbot shadows this.
+    fn ensure_eggbot(&self) {
+        if self.agents().iter().any(|a| a.name == "eggbot") {
+            return;
+        }
+        let dir = self.dirs.home.join("agents");
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let _ = std::fs::write(
+            dir.join("eggbot.md"),
+            "---\nname: eggbot\ntitle: Eggbot\njob: Walks you through building a bot, then writes it\npermissions.read: allow\npermissions.write: allow\npermissions.edit: allow\npermissions.bash: deny\n---\n\nYou are eggbot, the friendly bot-builder. Ask one question at a time: name, then one job, then how it talks, then what it may touch. One bot, one job — if it wants two jobs, suggest splitting it.\n",
+        );
+    }
+
+    fn interview_answer(&self, session: u64, answer: &str) -> Value {
+        let answer = answer.trim();
+        let mut interviews = self.interviews.lock().unwrap();
+        let Some(iv) = interviews.get_mut(&session) else {
+            return json!({"error": "no such interview"});
+        };
+        match iv.step {
+            0 => {
+                let name = answer.to_lowercase().replace(' ', "-");
+                let ok = !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                    && name.chars().next().is_some_and(|c| c.is_ascii_lowercase());
+                if !ok {
+                    return json!({"error": "names must be lowercase-kebab, e.g. pr-reviewer", "question": iv.question(), "draft": iv.draft()});
+                }
+                if self.agents().iter().any(|a| a.name == name) {
+                    return json!({"error": format!("a bot named {name} already roosts here"), "question": iv.question(), "draft": iv.draft()});
+                }
+                iv.name = name;
+                iv.title = answer.to_string();
+            }
+            1 => {
+                if answer.is_empty() {
+                    return json!({"error": "one job, in a sentence", "question": iv.question(), "draft": iv.draft()});
+                }
+                iv.job = answer.to_string();
+            }
+            2 => {
+                iv.voice = match answer {
+                    "friendly" => "Speak warmly and keep it short".into(),
+                    "precise" => "Answer precisely; cite files and lines".into(),
+                    "blunt" => "Be blunt. No filler".into(),
+                    other => other.to_string(),
+                };
+            }
+            3 => {
+                iv.profile = match answer {
+                    "writer" | "full" => answer.to_string(),
+                    _ => "reader".to_string(),
+                };
+            }
+            4 => {
+                if answer == "build it" || answer == "build" || answer == "yes" {
+                    return json!({"done": true, "draft": iv.draft()});
+                }
+                // anything else restarts the loop on that topic — keep it simple: re-ask
+                return json!({"question": "almost — say 'build it' when the preview looks right", "draft": iv.draft()});
+            }
+            _ => {}
+        }
+        iv.step += 1;
+        json!({"question": iv.question(), "draft": iv.draft(), "done": false})
+    }
+
+    fn interview_build(&self, session: u64) -> Result<String> {
+        let iv = self
+            .interviews
+            .lock()
+            .unwrap()
+            .remove(&session)
+            .context("no such interview")?;
+        let dir = self.dirs.home.join("agents");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{}.md", iv.name));
+        std::fs::write(&path, iv.draft())?;
+        Ok(iv.name)
     }
 
     fn next_id(&self, prefix: &str) -> String {
@@ -282,6 +448,7 @@ impl Shell {
 /// Serve the shell until killed.
 pub fn serve(dirs: NestDirs, cwd: PathBuf, port: u16) -> Result<()> {
     let shell = Arc::new(Shell::new(dirs, cwd));
+    shell.ensure_eggbot();
     let addr = format!("127.0.0.1:{port}")
         .to_socket_addrs()?
         .next()
@@ -399,6 +566,33 @@ fn route<'a>(
             match res {
                 Ok(p) => json_response(json!({"saved": p})),
                 Err(e) => json_response(json!({"error": e})),
+            }
+        }
+        (&Method::Post, "/api/interview/start") => {
+            let session = {
+                let mut seq = shell.seq.lock().unwrap();
+                *seq += 1;
+                *seq
+            };
+            let iv = Interview::default();
+            let question = iv.question();
+            shell.interviews.lock().unwrap().insert(session, iv);
+            json_response(json!({"session": session, "question": question}))
+        }
+        (&Method::Post, "/api/interview/answer") => {
+            let body = read_body(request);
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            json_response(shell.interview_answer(
+                v["session"].as_u64().unwrap_or_default(),
+                v["answer"].as_str().unwrap_or_default(),
+            ))
+        }
+        (&Method::Post, "/api/interview/build") => {
+            let body = read_body(request);
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            match shell.interview_build(v["session"].as_u64().unwrap_or_default()) {
+                Ok(name) => json_response(json!({"built": name})),
+                Err(e) => json_response(json!({"error": format!("{e:#}")})),
             }
         }
         (&Method::Post, "/api/hatch") | (&Method::Post, "/api/brood") => {
