@@ -205,6 +205,20 @@ mod toml_string_tests {
     }
 
     #[test]
+    fn output_round_trips_through_toml_and_yaml_parsers() {
+        // every prohibited codepoint must survive serialize+parse unchanged
+        let nasty: String = (0u32..=0x9F).filter_map(char::from_u32).collect();
+        for input in ["plain", "a\\b\"c\nd\te", &nasty] {
+            let s = toml_string(input);
+            let v: toml::Value = toml::from_str(&format!("k = {s}")).expect("valid TOML");
+            assert_eq!(v["k"].as_str().unwrap(), input, "TOML round-trip of {input:?}");
+            let v: serde_yaml::Value =
+                serde_yaml::from_str(&format!("k: {s}")).expect("valid YAML");
+            assert_eq!(v["k"].as_str().unwrap(), input, "YAML round-trip of {input:?}");
+        }
+    }
+
+    #[test]
     fn ordinary_text_passes_through() {
         assert_eq!(toml_string("hello world — Üñí"), "\"hello world — Üñí\"");
     }
