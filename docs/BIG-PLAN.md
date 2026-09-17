@@ -159,8 +159,11 @@ Why this layering wins:
 | **`nest` adapter for Spoke — written, tested, verified live** | ✅ branch `devin/nest-adapter` |
 | Extension surface mapped from the seed engine (evolves to `.nest/*`) | ✅ `research/05` |
 | Devin-cloud feature audit mapped to the plan | ✅ `research/06` |
-| `[[bots]]`/`[[automations]]` sections in `agent.toml` | 🔲 next step |
-| Access to the private app repo | 🔲 **needs Steven** (see §9) |
+| Fork survey (142 repos) + BobTheBuilder deep-dive | ✅ `research/07` |
+| `[[bots]]`/`[[automations]]` + boss/permissions/routing/services schema | ✅ **PR #2 + PR #3** (awaiting merge) |
+| `bob-council` starter package (8 agents + 6 skills) | ✅ **PR #3** |
+| Engine spine (Phase 2b — wrap-don't-rebuild) | 🔲 next step |
+| Access to the private app repo | 🔲 **needs Steven** (see §9) — only for debloat Track B |
 
 ---
 
@@ -231,6 +234,23 @@ Plus `spoke bot list` / `spoke bot add <name> --job "…"` CLI sugar, `doctor`
 counts, and a git-managed `.devin/blueprint.yaml` for the Rust toolchain.
 Remaining known gap: removing a `[[bots]]` entry doesn't delete the rendered
 `.nest/agents/<name>.md` yet (warned, not silent).
+
+**SHIPPED (PR #3) — "Bob the Boss" phase:** BobTheBuilder folded into the
+schema and packaged as NEST's first council —
+1. `bots[].permissions` (per-tool `allow`/`ask`/`deny`), `bots[].mode`
+   (`primary`/`subagent` — subagents spool, return, auto-clean), `bots[].boss`
+   (max one orchestrator), `bots[].max_steps` — all rendered into the
+   `.nest/agents/<name>.md` frontmatter, mirroring Bob's agent format.
+2. `[[routing]]` → `.nest/routing.toml` — the Boss's dispatch table
+   (patterns → bot + `fallback` escalation ladder), modeled on Bob's
+   auto-detection routing.
+3. `[[services]]` → `.nest/services.toml` — declared daemons
+   (name/port/health/start) the app can boot and health-check, modeled on
+   Bob's `orchestrate.sh` service table.
+4. `packages/bob-council/` — a path-sourced package shipping BobTheBuilder's
+   8 specialist agents (converted to NEST format, permission maps intact)
+   + 6 skills → `spoke add packages/bob-council` installs the council into
+   `~/.nest/`. Scan warnings (network refs, host script) surface as designed.
 
 ---
 
@@ -315,6 +335,17 @@ Cloud tier, phase 4–5+: **headless `nest-agent` runner** via
 launchd/systemd — Devin's session model without a hosted control plane —
 plus a hosted registry and external Slack/Linear-style triggers.
 
+Fork-survey gems folded in (research/07): **engine = wrap, don't rebuild**
+(agentctl-style spawn wrappers + pi-ai unified provider API); **visible
+loop dashboard** (waku-agent — watch the agent think, Guided-mode
+transparency); **zero-cost provider layer** (freellmapi/codex-router
+failover honoring BobTheBuilder's cost-policy) + **CodexBar-style limit
+windows** in the model picker; **the council bot** as a template
+(llm-council + fusion-harness + gauntlet-loop patterns); and the endgame
+— **self-improving bots that author their own skills** (hermes-agent's
+learning loop: bot → SKILL.md → `spoke add` self-install → provenance in
+`agent.lock`).
+
 ---
 
 ## 8. The phase roadmap (priorities after Steven's noob-first directive)
@@ -324,71 +355,65 @@ plus a hosted registry and external Slack/Linear-style triggers.
 | **0 — Spec & research** | ✅ this plan, all research docs, adapter | — | done |
 | **1 — Plumbing finish** | `[[bots]]` + `[[automations]]` in `agent.toml` schema; adapter writes `.nest/agents/*.md`; `package.toml` carries bot defs; CLI `bot list/add` sugar | nothing — pure Spoke repo work | ~1 session |
 | **1a — Installer upstream** | patch lands on CommandCodeAI/desktop (or issue filed) | their repo access or issue | minutes |
-| **2 — The Shell (flagship)** | one-window app: tab strip, sidebar roster of **animated bot characters** (idle/thinking/working/stuck states), Guided/Expert mode toggle, first-run onboarding | **new repo (Steven is creating)** + app engine access | 1–2 sessions after access |
+| **2 — The Shell (flagship)** | one-window app: tab strip, sidebar roster of **animated bot characters** (idle/thinking/working/stuck states), Guided/Expert mode toggle, first-run onboarding — plus the **watch-it-think loop view** (waku-agent gem: every step the agent takes lights up on a visible loop, Guided mode's transparency) | **new repo (Steven is creating)** + engine spine (2b) | 1–2 sessions after access |
 | **2a — eggbot in the shell** | the walkthrough: 4-question interview → `spoke diff` preview card → build → test-drive → hand-off to roster; rubric skill enforcing the one-job bar | phase 1 + 2 | 1 session after access |
-| **3 — Sharing** | bots as Spoke packages; link/file import; starter template pack (oncall responder, PR reviewer, wiki keeper) | phase 1 | ~1 session |
+| **2b — Engine spine (thin)** | **wrap, don't rebuild**: spawn wrappers around installed agent CLIs (Claude Code, Codex, Pi, agent-zero — the agentctl pattern: launch, stream lifecycle events, collect results, no control plane) + a unified provider API (pi-ai shape). This IS the "start thin" engine answer — NEST talks to every harness the user already has | repo connected | ~1 session |
+| **3 — Sharing** | bots as Spoke packages; link/file import; starter template pack: oncall responder, PR reviewer, wiki keeper, **+ the council bot** (second-opinion capability built on the shipped llm-council skill + fusion-harness/gauntlet-loop patterns: N-way opinions → critic → synthesis) | phase 1 | ~1 session |
 | **4 — Routines** | scheduler + webhooks in-app; `[[automations]]`→`.nest/cron` once format verified; quiet reporting + receipts | phase 2; cron format | 1–2 sessions |
+| **4a — Provider layer (zero-cost)** | local provider proxy with **free-tier failover** (freellmapi/codex-router patterns — honors Bob's cost-policy.md) + **CodexBar-style limit awareness** in the model-tier picker (per-provider reset windows shown when choosing `model:`) | phase 2b | ~1 session |
 | **5 — Cloud tier (optional)** | headless `nest-agent` binary; hosted registry; external triggers | phase 3 + backend | 2–3 sessions |
+| **6 — Self-improving bots (the differentiator)** | **hermes-agent's learning loop**: bots author their own skills — Spoke packages written by bots (a bot finishes a hard task → extracts a reusable `SKILL.md` → `spoke add` self-installs → `agent.lock` records provenance "authored-by: <bot>"). The roster literally gets smarter with use | phase 3 + 4 | 1–2 sessions |
 | **B — Debloat (parallel)** | Tier A config (~95–115 MB) + installer fix + packaging audit | private repo's build config | <1 session |
 | **B2 — Debloat tier B** | jimp/otel/reconciler audit + fixes | source read access | <1 session |
 
-**Critical path:** Phase 1 (Spoke schema) needs nothing but your repo — I
-can start it the moment the GitHub repo is connected. Phase 2 (the shell)
-needs the new project repo + the app engine. The GUI is now Phase 2, not an
-afterthought — the noob-first shell IS the product.
+**Critical path:** Phase 1 (Spoke schema) ✅ shipped in PR #2; the Boss
+fold ✅ shipped in PR #3. Next executable step is **2b — the engine
+spine** (wrap-don't-rebuild spawn wrappers): it unblocks Phase 2's shell.
+The GUI is now Phase 2, not an afterthought — the noob-first shell IS
+the product.
 
 ---
 
 ## 9. What YOU need to do (plain-English checklist)
 
-These are in order. Each is a few minutes. Copy-paste commands are provided.
+### ✅ Steps 1–3 — DONE (as of this session)
+Save-to-Mac, GitHub seeding, and repo connection are complete: `srhardy/NEST`
+is connected, `main` holds the seed, and PRs **#2** (bot roster +
+automations schema) and **#3** (Bob-the-Boss fold + bob-council package +
+this updated plan) are open and mergeable.
 
-### Step 1 — Save this workspace to your Mac
-Download the attachments from this chat, then in Terminal:
-```bash
-mkdir -p ~/projects/nest
-# unzip the files you downloaded into ~/projects/nest/
-unzip -o ~/Downloads/spoke-src-adapter.zip -d ~/projects/nest/
-```
-(The zip is your whole Spoke project INCLUDING the `nest` adapter + git
-history — it can replace your existing `~/projects/spoke` folder.)
+### Step 1 — Merge the open PRs, in order
+On github.com/srhardy/NEST: merge **PR #2** first, then **PR #3** (it's
+stacked on #2; GitHub retargets automatically). Both are clean and
+mergeable — read them like changelogs, that's what PRs are for.
 
-### Step 2 — Put NEST + Spoke on GitHub
-You made `github.com/srhardy/NEST` — now put the code in it:
-```bash
-cd ~
-git clone https://github.com/srhardy/NEST.git && cd NEST
-cp -R ~/projects/nest/spoke_src/spoke ./spoke   # spoke lives inside NEST
-mkdir -p docs && cp ~/Downloads/BIG-PLAN.md docs/
-git add -A && git commit -m "seed: spoke content layer + nest adapter + BIG-PLAN" && git push
-```
-(Spoke inside the NEST repo = one connection, one home. If you'd rather
-keep `srhardy/spoke` separate that works too — push it there instead.)
+### Step 2 — Say "go" for Phase 2b
+Phase **2b — Engine spine (thin)** is the next executable step and needs
+no external access: spawn wrappers around the agent CLIs already on a
+machine + a unified provider API. It unblocks Phase 2's shell.
 
-### Step 3 — Connect the repo to Devin
-Go to https://app.devin.ai/settings/repositories and add `srhardy/NEST`.
-That's it — from then on I clone it, work on branches, and open PRs for
-you to review. This is the "GitHub + Devin play nicely" step: one click
-there, and everything after flows through pull requests you can read.
-
-### Step 4 — Engine decision
+### Step 3 — Engine decision (background)
 NEST needs an agent engine. Options, easiest first:
+- **Start thin (now concrete — Phase 2b)** — the fork survey settled the
+  shape: **wrap, don't rebuild**. Spawn wrappers around the agent CLIs you
+  already have (Claude Code, Codex, Pi, agent-zero) — the agentctl pattern:
+  launch, stream lifecycle events, collect results, no control plane —
+  plus a unified provider API (pi-ai shape) for direct provider calls.
+  *(Rec: this. Fastest route to a real window, and NEST talks to every
+  harness the user already has.)*
 - **Build NEST's own** inside the NEST repo — Rust or TypeScript core that
   reads `.nest/`, `AGENTS.md`, `mcp.json` (the formats are already spec'd;
   BYOK via the same provider pattern). Most work, most ownership.
 - **Reuse the seed engine** — if you can get source access to Command
   Code's engine, NEST wraps it. Tell me who owns it / how you got the app
   and I'll help you figure out the path.
-- **Start thin** — the shell + Spoke + a simple chat loop first (call any
-  provider API directly), upgrade the engine later. *(Rec: start thin —
-  it's the fastest route to a real window on screen.)*
 
-### Step 5 — Send the installer fix upstream (optional, good deed)
+### Step 4 — Send the installer fix upstream (optional, good deed)
 Apply `research/installer-repo-name-fix.patch` and open a PR on
 `CommandCodeAI/desktop` — or file an issue with the patch attached. Their
 installer is currently broken for every macOS/Linux user.
 
-### Step 6 — Make three decisions (reply with your picks)
+### Step 5 — Make three decisions (reply with your picks)
 1. **Bot scope:** roster per-user-global, per-project, or global-with-
    project-pin? *(Recommendation: global roster, optional project pin —
    matches how skills already have both `~/` and project tiers.)*
@@ -399,10 +424,10 @@ installer is currently broken for every macOS/Linux user.
    it's the only honest way to "bots that work while the laptop is closed.")*
 
 ### Then you're done — I take it from there
-With Steps 2–3 done I can keep building Phase 1 (Spoke `[[bots]]` schema +
-agent projection) inside NEST immediately. With Step 4's call made I start
-Phase 2 — the shell window with the animated roster and eggbot.
-Everything else in the plan is mine.
+Merge #2 → #3, reply with your three picks (or accept my recs), and say
+"go". I start Phase **2b — engine spine** immediately: it's pure code in
+this repo, needs no outside access, and it's what unblocks Phase 2's
+shell. Everything else in the plan is mine.
 
 ---
 

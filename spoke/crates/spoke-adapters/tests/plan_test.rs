@@ -1,7 +1,7 @@
 use std::fs;
 
 use spoke_adapters::{apply, find, Ctx};
-use spoke_core::manifest::{Automation, Bot};
+use spoke_core::manifest::{Automation, Bot, BotMode, Route, Service, ToolPolicy};
 use spoke_core::{Manifest, McpServer};
 
 fn manifest_with_mcp() -> Manifest {
@@ -182,6 +182,10 @@ fn nest_projection_renders_bots_and_automations() {
         mcp: vec!["spoke-fetch".to_string(), "ghost".to_string()],
         model: Some("balanced".to_string()),
         memory: vec!["Templates live in the catalog".to_string()],
+        mode: None,
+        permissions: Default::default(),
+        boss: false,
+        max_steps: None,
     });
     manifest.automations.push(Automation {
         name: "morning-triage".to_string(),
@@ -261,6 +265,10 @@ fn manifest_validation_rejects_bad_bots_and_automations() {
         mcp: vec![],
         model: None,
         memory: vec![],
+        mode: None,
+        permissions: Default::default(),
+        boss: false,
+        max_steps: None,
     });
     assert!(manifest.validate().is_err(), "uppercase name must fail");
 
@@ -292,4 +300,127 @@ fn manifest_validation_rejects_bad_bots_and_automations() {
 
     manifest.automations[0].schedule = Some("0 9 * * *".to_string());
     manifest.validate().expect("fixed manifest is valid");
+
+    // The Boss pattern: at most one boss; routes need patterns; services need names.
+    manifest.bots[0].boss = true;
+    manifest.bots.push(manifest.bots[0].clone());
+    manifest.bots[1].name = "second-boss".to_string();
+    assert!(manifest.validate().is_err(), "two bosses must fail");
+    manifest.bots.truncate(1);
+
+    manifest.routing.push(Route {
+        patterns: vec![],
+        bot: "ok-name".to_string(),
+        fallback: vec![],
+    });
+    assert!(manifest.validate().is_err(), "empty patterns must fail");
+    manifest.routing[0].patterns = vec!["debug".to_string()];
+
+    manifest.services.push(Service {
+        name: String::new(),
+        port: Some(8765),
+        health: None,
+        start: None,
+    });
+    assert!(manifest.validate().is_err(), "empty service name must fail");
+    manifest.services[0].name = "openmemory".to_string();
+    manifest.validate().expect("full manifest is valid");
+}
+
+#[test]
+fn nest_projection_renders_boss_routing_services_and_permissions() {
+    let home = tempfile::tempdir().expect("home");
+    let project = tempfile::tempdir().expect("project");
+    fs::create_dir_all(home.path().join(".nest")).expect("nest dir");
+
+    let mut manifest = manifest_with_mcp();
+    manifest.bots.push(Bot {
+        name: "boss".to_string(),
+        title: Some("The Boss".to_string()),
+        job: "Keeps an eye on everything and delegates to the council".to_string(),
+        voice: vec!["You are the senior assistant.".to_string()],
+        anti_jobs: vec![],
+        skills: vec![],
+        mcp: vec![],
+        model: None,
+        memory: vec![],
+        mode: Some(BotMode::Primary),
+        permissions: Default::default(),
+        boss: true,
+        max_steps: None,
+    });
+    manifest.bots.push(Bot {
+        name: "debugger".to_string(),
+        title: None,
+        job: "Scientific-method debugging".to_string(),
+        voice: vec![],
+        anti_jobs: vec![],
+        skills: vec![],
+        mcp: vec![],
+        model: None,
+        memory: vec![],
+        mode: Some(BotMode::Subagent),
+        permissions: [
+            ("bash".to_string(), ToolPolicy::Ask),
+            ("read".to_string(), ToolPolicy::Allow),
+            ("edit".to_string(), ToolPolicy::Ask),
+        ]
+        .into_iter()
+        .collect(),
+        boss: false,
+        max_steps: Some(30),
+    });
+    manifest.routing.push(Route {
+        patterns: vec!["debug".to_string(), "stack trace".to_string()],
+        bot: "debugger".to_string(),
+        fallback: vec!["council".to_string()],
+    });
+    manifest.services.push(Service {
+        name: "openmemory".to_string(),
+        port: Some(8765),
+        health: Some("/api/v1/stats/".to_string()),
+        start: Some("docker compose up -d".to_string()),
+    });
+    manifest.validate().expect("manifest valid");
+
+    let harness = find("nest").expect("adapter");
+    let plan = harness.plan(&Ctx::new(home.path(), project.path(), &manifest));
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("council") && w.contains("fallback")),
+        "dangling fallback ref must warn: {:?}",
+        plan.warnings
+    );
+
+    apply::apply(&plan, home.path(), project.path(), 1).expect("apply");
+
+    let boss = fs::read_to_string(project.path().join(".nest/agents/boss.md")).expect("read boss");
+    assert!(boss.contains("boss: true"));
+    assert!(boss.contains("mode: primary"));
+
+    let dbg =
+        fs::read_to_string(project.path().join(".nest/agents/debugger.md")).expect("read dbg");
+    assert!(dbg.contains("mode: subagent"));
+    assert!(dbg.contains("max_steps: 30"));
+    assert!(dbg.contains("permissions:"));
+    assert!(dbg.contains("  bash: ask"));
+    assert!(dbg.contains("  read: allow"));
+
+    let routing = fs::read_to_string(project.path().join(".nest/routing.toml")).expect("read");
+    assert!(routing.contains("[[route]]"));
+    assert!(routing.contains("bot = \"debugger\""));
+    assert!(routing.contains("fallback = [\"council\"]"));
+
+    let services = fs::read_to_string(project.path().join(".nest/services.toml")).expect("read");
+    assert!(services.contains("[[service]]"));
+    assert!(services.contains("name = \"openmemory\""));
+    assert!(services.contains("port = 8765"));
+    assert!(services.contains("health = \"/api/v1/stats/\""));
+
+    let second = apply::apply(&plan, home.path(), project.path(), 2).expect("second apply");
+    assert!(
+        second.iter().all(|c| !c.changed),
+        "second apply must change nothing"
+    );
 }

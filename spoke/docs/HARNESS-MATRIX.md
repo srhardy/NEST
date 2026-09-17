@@ -28,13 +28,15 @@ Verified against each harness's official documentation. Harness formats move fas
 | Instruction bridge | **Shipped** — marked block in `CLAUDE.md` importing `AGENTS.md` | **Shipped** — marked block in `AGENTS.md` | **Shipped** — marked block in `AGENTS.md` (native memory file) | Planned | Planned |
 | MCP servers | **Shipped** — `.mcp.json` `mcpServers.<name>` | **Shipped** — `.codex/config.toml` `[mcp_servers.<name>]` | **Shipped** — `.nest/mcp.json` `mcpServers.<name>` | Planned | Planned |
 | Skills (packages) | **Shipped** — `~/.claude/skills/<name>/` | **Shipped** — `~/.codex/skills/<name>/` (⚠ see gap 1) | **Shipped** — `~/.nest/skills/<name>/` | Planned | Planned |
-| Agents / bots | Not yet | Not yet | **Shipped** — `[[bots]]` → `.nest/agents/<name>.md`; package `[[agents]]` → `~/.nest/agents/<name>/` | Planned | Planned |
+| Agents / bots | Not yet | Not yet | **Shipped** — `[[bots]]` → `.nest/agents/<name>.md` (job/voice/model/`mode`/`boss`/`max_steps`/per-tool `permissions`); package `[[agents]]` → `~/.nest/agents/<name>/` | Planned | Planned |
+| Routing (boss→council dispatch) | Not yet | Not yet | **Shipped** — `[[routing]]` → `.nest/routing.toml` (patterns → bot + fallback ladder) | Planned | Planned |
+| Services (declared daemons) | Not yet | Not yet | **Shipped** — `[[services]]` → `.nest/services.toml` (port/health/start) | Planned | Planned |
 | Automations | Not yet | Not yet | **Shipped** — `[[automations]]` → `.nest/automations.toml` | Planned | Planned |
 | Telemetry-off env | **Shipped** — merged `env` keys in `.claude/settings.json` | Not expressible (⚠ gap 2) | Not yet (settings format in design) | Planned | Planned |
 | Accounting hooks | **Shipped** — append-only `SessionStart`/`SessionEnd`/`PreCompact` | Not yet (different hook model) | Not yet (`trusted-hooks` designed, format unverified) | Not yet | Not yet (no declarative hooks) |
 | Permissions / policy | Planned (policy spoke) | Planned | Planned | Planned | Planned |
 
-Scope is deliberate: two harnesses done properly beat six done badly. Adding a harness is one file plus the contract tests in `ADAPTER-CONTRACT.md` — every existing command starts working with it immediately. Nest was added in one adapter file because its surfaces (`AGENTS.md`, `.nest/mcp.json`, `~/.nest/skills/`, `.nest/agents/`, `.nest/automations.toml`) evolve the proven Command Code layout. Removing a `[[bots]]` entry does not yet delete the rendered `.nest/agents/<name>.md` — surfaced as a sync warning until stale tracking lands.
+Scope is deliberate: two harnesses done properly beat six done badly. Adding a harness is one file plus the contract tests in `ADAPTER-CONTRACT.md` — every existing command starts working with it immediately. Nest was added in one adapter file because its surfaces (`AGENTS.md`, `.nest/mcp.json`, `~/.nest/skills/`, `.nest/agents/`, `.nest/{automations,routing,services}.toml`) evolve the proven Command Code layout. Removing a `[[bots]]` entry does not yet delete the rendered `.nest/agents/<name>.md` — surfaced as a sync warning until stale tracking lands.
 
 ---
 

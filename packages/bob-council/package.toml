@@ -1,0 +1,67 @@
+name = "bob-council"
+version = "0.1.0"
+description = "The Boss's council — BobTheBuilder's 8 specialist sub-agents and 6 skills, packaged for NEST"
+tier = "curated"
+
+[source]
+path = "."
+
+# The council — specialist bots that spool as subagents, return results, and
+# auto-clean. Pair with a `boss = true` bot and [[routing]] entries in
+# agent.toml to get the full Boss -> Assistant -> Council pattern.
+[[agents]]
+name = "planner"
+path = "agents/planner.md"
+
+[[agents]]
+name = "executor"
+path = "agents/executor.md"
+
+[[agents]]
+name = "debugger"
+path = "agents/debugger.md"
+
+[[agents]]
+name = "verifier"
+path = "agents/verifier.md"
+
+[[agents]]
+name = "researcher"
+path = "agents/researcher.md"
+
+[[agents]]
+name = "codebase-mapper"
+path = "agents/codebase-mapper.md"
+
+[[agents]]
+name = "ui-auditor"
+path = "agents/ui-auditor.md"
+
+[[agents]]
+name = "assumptions-analyzer"
+path = "agents/assumptions-analyzer.md"
+
+# Shared skills — the same SKILL.md format both Kilo and Gemini consumed.
+[[skills]]
+name = "legal"
+path = "skills/legal"
+
+[[skills]]
+name = "llm-council"
+path = "skills/llm-council"
+
+[[skills]]
+name = "firecrawl"
+path = "skills/firecrawl"
+
+[[skills]]
+name = "surfsense"
+path = "skills/surfsense"
+
+[[skills]]
+name = "autonomous-bot"
+path = "skills/autonomous-bot"
+
+[[skills]]
+name = "copilot"
+path = "skills/copilot"
