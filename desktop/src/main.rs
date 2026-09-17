@@ -18,13 +18,25 @@ use tauri::{
     AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
-/// Free localhost port for the embedded shell.
-fn pick_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("cannot bind a port")
-        .local_addr()
-        .unwrap()
-        .port()
+/// Free localhost port for the embedded shell. The listener stays bound
+/// and is handed to `serve_on` — nobody can steal the port in between.
+fn pick_port() -> (TcpListener, u16) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("cannot bind a port");
+    let port = listener.local_addr().unwrap().port();
+    (listener, port)
+}
+
+/// Where the running instance publishes its port — one NEST at a time.
+fn lock_file(home: &std::path::Path) -> PathBuf {
+    home.join("desktop.port")
+}
+
+/// If another instance already serves its recorded port, leave quietly.
+fn already_running(dirs: &nest::home::NestDirs) -> bool {
+    std::fs::read_to_string(lock_file(&dirs.home))
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .is_some_and(|port| get(port, "/api/state").is_some())
 }
 
 /// Wait until the shell is accepting connections.
@@ -64,7 +76,7 @@ fn bird_icon() -> Image<'static> {
     // crest triangle
     for y in 2..9 {
         for x in (16 - (y - 2) / 2)..=(16 + (y - 2) / 2) {
-            put(x as i32, y as i32, 255);
+            put(x, y, 255);
         }
     }
     // face cutout (transparent ellipse)
@@ -91,12 +103,18 @@ fn get(port: u16, path: &str) -> Option<String> {
     buf.split("\r\n\r\n").nth(1).map(|b| b.to_string())
 }
 
-/// Watch the roost count; every new receipt is a desktop notification.
+/// Watch the roost; every new receipt ID is a desktop notification.
+/// Receipts arrive newest-first, so unseen ones are replayed oldest→newest.
 fn watch_roost(port: u16) {
-    let mut seen = get(port, "/api/runs")
+    let mut seen: std::collections::HashSet<String> = get(port, "/api/runs")
         .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
-        .and_then(|v| v["receipts"].as_array().map(|a| a.len()))
-        .unwrap_or(0);
+        .and_then(|v| v["receipts"].as_array().cloned())
+        .map(|rs| {
+            rs.iter()
+                .filter_map(|r| r["id"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
     loop {
         thread::sleep(Duration::from_secs(5));
         let Some(body) = get(port, "/api/runs") else {
@@ -107,17 +125,18 @@ fn watch_roost(port: u16) {
         else {
             continue;
         };
-        if receipts.len() > seen {
-            for r in &receipts[seen..] {
-                let status = r["status"].as_str().unwrap_or("done");
-                let task = r["task"].as_str().unwrap_or("a run");
-                Notification::new()
-                    .summary("NEST")
-                    .body(&format!("{task} — {status}"))
-                    .show()
-                    .ok();
+        for r in receipts.iter().rev() {
+            let Some(id) = r["id"].as_str() else { continue };
+            if !seen.insert(id.to_string()) {
+                continue;
             }
-            seen = receipts.len();
+            let status = r["status"].as_str().unwrap_or("done");
+            let task = r["task"].as_str().unwrap_or("a run");
+            Notification::new()
+                .summary("NEST")
+                .body(&format!("{task} — {status}"))
+                .show()
+                .ok();
         }
     }
 }
@@ -161,15 +180,22 @@ fn toggle_birdy(app: &AppHandle, port: u16) {
 }
 
 fn main() -> anyhow::Result<()> {
-    let port = pick_port();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let dirs = nest::home::NestDirs::resolve(&cwd, None);
+    // one nest at a time — a second launch would run a second patrol and
+    // remote watcher over the same home, duplicating every dispatch
+    if already_running(&dirs) {
+        return Ok(());
+    }
+    let (listener, port) = pick_port();
+    let home = dirs.home.clone();
     thread::spawn(move || {
-        let _ = nest::shell::serve(dirs, cwd, port);
+        let _ = nest::shell::serve_on(dirs, cwd, listener);
     });
     if !wait_ready(port) {
         anyhow::bail!("the nest shell did not start on port {port}");
     }
+    std::fs::write(lock_file(&home), port.to_string()).ok();
 
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![reopen_main])
@@ -204,7 +230,7 @@ fn main() -> anyhow::Result<()> {
             .min_inner_size(860.0, 560.0)
             .build()?;
 
-            toggle_birdy(&app.handle(), port);
+            toggle_birdy(app.handle(), port);
             thread::spawn(move || watch_roost(port));
             Ok(())
         })

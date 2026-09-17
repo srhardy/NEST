@@ -798,6 +798,19 @@ fn remotes_watch(shell: Arc<Shell>) {
 
 /// Serve the shell until killed.
 pub fn serve(dirs: NestDirs, cwd: PathBuf, port: u16) -> Result<()> {
+    let addr = format!("127.0.0.1:{port}")
+        .to_socket_addrs()?
+        .next()
+        .context("cannot resolve shell address")?;
+    let listener = std::net::TcpListener::bind(addr)
+        .map_err(|e| anyhow::anyhow!("cannot bind {addr}: {e}"))?;
+    println!("nest shell listening on http://127.0.0.1:{port}");
+    serve_on(dirs, cwd, listener)
+}
+
+/// Serve on an already-bound listener — the caller owns the port
+/// reservation, so there's no bind-time race with another process.
+pub fn serve_on(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) -> Result<()> {
     let shell = Arc::new(Shell::new(dirs, cwd));
     shell.ensure_eggbot();
     {
@@ -817,12 +830,8 @@ pub fn serve(dirs: NestDirs, cwd: PathBuf, port: u16) -> Result<()> {
             });
         });
     }
-    let addr = format!("127.0.0.1:{port}")
-        .to_socket_addrs()?
-        .next()
-        .context("cannot resolve shell address")?;
-    let server = Server::http(addr).map_err(|e| anyhow::anyhow!("cannot bind {addr}: {e}"))?;
-    println!("nest shell listening on http://127.0.0.1:{port}");
+    let server = Server::from_listener(listener, None)
+        .map_err(|e| anyhow::anyhow!("cannot serve on listener: {e}"))?;
     // each request gets its own thread — an open SSE stream must never
     // serialize the rest of the API behind it
     for request in server.incoming_requests() {
