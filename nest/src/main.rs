@@ -71,6 +71,8 @@ enum Cmd {
         #[arg(long, default_value = "4747")]
         port: u16,
     },
+    /// Headless runtime — patrol + remotes with no UI. For launchd/systemd.
+    Daemon,
 }
 
 fn peep_line(bot: &str, peep: &Peep) -> Option<String> {
@@ -236,12 +238,19 @@ fn main() -> Result<()> {
             let (dirs, _) = resolve(&cli)?;
             let router = Router::from_dirs(&dirs);
             for p in router.list() {
-                let mark = if p.available {
+                let mark = if p.exhausted {
+                    "over limit"
+                } else if p.available {
                     "ready"
                 } else {
                     "not installed"
                 };
-                println!("{:<18} {:<8} {:<6} {}", p.name, p.kind, p.cost, mark);
+                let model = p.model.as_deref().unwrap_or("-");
+                let usage = p.usage.as_deref().unwrap_or("-");
+                println!(
+                    "{:<18} {:<8} {:<6} {:<14} {:<22} {}",
+                    p.name, p.kind, p.cost, model, usage, mark
+                );
             }
         }
         Cmd::Ask { provider, prompt } => {
@@ -257,6 +266,10 @@ fn main() -> Result<()> {
         Cmd::Shell { port } => {
             let (dirs, cwd) = resolve(&cli)?;
             nest::shell::serve(dirs, cwd, *port)?;
+        }
+        Cmd::Daemon => {
+            let (dirs, cwd) = resolve(&cli)?;
+            nest::shell::daemon(dirs, cwd)?;
         }
     }
     Ok(())
