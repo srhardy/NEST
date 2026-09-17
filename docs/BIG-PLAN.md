@@ -159,8 +159,11 @@ Why this layering wins:
 | **`nest` adapter for Spoke — written, tested, verified live** | ✅ branch `devin/nest-adapter` |
 | Extension surface mapped from the seed engine (evolves to `.nest/*`) | ✅ `research/05` |
 | Devin-cloud feature audit mapped to the plan | ✅ `research/06` |
-| `[[bots]]`/`[[automations]]` sections in `agent.toml` | 🔲 next step |
-| Access to the private app repo | 🔲 **needs Steven** (see §9) |
+| Fork survey (142 repos) + BobTheBuilder deep-dive | ✅ `research/07` |
+| `[[bots]]`/`[[automations]]` + boss/permissions/routing/services schema | ✅ **PR #2 + PR #3** (awaiting merge) |
+| `bob-council` starter package (8 agents + 6 skills) | ✅ **PR #3** |
+| Engine spine (Phase 2b — wrap-don't-rebuild) | 🔲 next step |
+| Access to the private app repo | 🔲 **needs Steven** (see §9) — only for debloat Track B |
 
 ---
 
@@ -373,37 +376,23 @@ the product.
 
 ## 9. What YOU need to do (plain-English checklist)
 
-These are in order. Each is a few minutes. Copy-paste commands are provided.
+### ✅ Steps 1–3 — DONE (as of this session)
+Save-to-Mac, GitHub seeding, and repo connection are complete: `srhardy/NEST`
+is connected, `main` holds the seed, and PRs **#2** (bot roster +
+automations schema) and **#3** (Bob-the-Boss fold + bob-council package +
+this updated plan) are open and mergeable.
 
-### Step 1 — Save this workspace to your Mac
-Download the attachments from this chat, then in Terminal:
-```bash
-mkdir -p ~/projects/nest
-# unzip the files you downloaded into ~/projects/nest/
-unzip -o ~/Downloads/spoke-src-adapter.zip -d ~/projects/nest/
-```
-(The zip is your whole Spoke project INCLUDING the `nest` adapter + git
-history — it can replace your existing `~/projects/spoke` folder.)
+### Step 1 — Merge the open PRs, in order
+On github.com/srhardy/NEST: merge **PR #2** first, then **PR #3** (it's
+stacked on #2; GitHub retargets automatically). Both are clean and
+mergeable — read them like changelogs, that's what PRs are for.
 
-### Step 2 — Put NEST + Spoke on GitHub
-You made `github.com/srhardy/NEST` — now put the code in it:
-```bash
-cd ~
-git clone https://github.com/srhardy/NEST.git && cd NEST
-cp -R ~/projects/nest/spoke_src/spoke ./spoke   # spoke lives inside NEST
-mkdir -p docs && cp ~/Downloads/BIG-PLAN.md docs/
-git add -A && git commit -m "seed: spoke content layer + nest adapter + BIG-PLAN" && git push
-```
-(Spoke inside the NEST repo = one connection, one home. If you'd rather
-keep `srhardy/spoke` separate that works too — push it there instead.)
+### Step 2 — Say "go" for Phase 2b
+Phase **2b — Engine spine (thin)** is the next executable step and needs
+no external access: spawn wrappers around the agent CLIs already on a
+machine + a unified provider API. It unblocks Phase 2's shell.
 
-### Step 3 — Connect the repo to Devin
-Go to https://app.devin.ai/settings/repositories and add `srhardy/NEST`.
-That's it — from then on I clone it, work on branches, and open PRs for
-you to review. This is the "GitHub + Devin play nicely" step: one click
-there, and everything after flows through pull requests you can read.
-
-### Step 4 — Engine decision
+### Step 3 — Engine decision (background)
 NEST needs an agent engine. Options, easiest first:
 - **Start thin (now concrete — Phase 2b)** — the fork survey settled the
   shape: **wrap, don't rebuild**. Spawn wrappers around the agent CLIs you
@@ -419,12 +408,12 @@ NEST needs an agent engine. Options, easiest first:
   Code's engine, NEST wraps it. Tell me who owns it / how you got the app
   and I'll help you figure out the path.
 
-### Step 5 — Send the installer fix upstream (optional, good deed)
+### Step 4 — Send the installer fix upstream (optional, good deed)
 Apply `research/installer-repo-name-fix.patch` and open a PR on
 `CommandCodeAI/desktop` — or file an issue with the patch attached. Their
 installer is currently broken for every macOS/Linux user.
 
-### Step 6 — Make three decisions (reply with your picks)
+### Step 5 — Make three decisions (reply with your picks)
 1. **Bot scope:** roster per-user-global, per-project, or global-with-
    project-pin? *(Recommendation: global roster, optional project pin —
    matches how skills already have both `~/` and project tiers.)*
@@ -435,10 +424,10 @@ installer is currently broken for every macOS/Linux user.
    it's the only honest way to "bots that work while the laptop is closed.")*
 
 ### Then you're done — I take it from there
-With Steps 2–3 done I can keep building Phase 1 (Spoke `[[bots]]` schema +
-agent projection) inside NEST immediately. With Step 4's call made I start
-Phase 2 — the shell window with the animated roster and eggbot.
-Everything else in the plan is mine.
+Merge #2 → #3, reply with your three picks (or accept my recs), and say
+"go". I start Phase **2b — engine spine** immediately: it's pure code in
+this repo, needs no outside access, and it's what unblocks Phase 2's
+shell. Everything else in the plan is mine.
 
 ---
 
