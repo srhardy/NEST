@@ -195,6 +195,7 @@ Why this layering wins:
 | Starter bots pack (oncall, pr-reviewer, wiki-keeper, council) + link/file import (`spoke add <url|file|dir>`) | ✅ `devin/starter-pack` — Phase 3 |
 | Provider layer 4a: `openai` kind (any OpenAI-compat endpoint via curl) + limit windows (`~/.nest/usage/`, exhausted providers sit out) + commented seed providers.toml | ✅ **PR #11** (merged) |
 | Routine webhook: `POST /api/duties/<name>/fire` + settings fire button (Phase 4 complete) | ✅ `devin/routine-fire` |
+| Headless runner: `nest daemon` — patrol + remotes, no HTTP (Phase 5 local tier) | ✅ `devin/routine-fire` |
 | Access to the private app repo | 🔲 **needs Steven** (see §9) — only for debloat Track B |
 
 ---
@@ -393,7 +394,7 @@ learning loop: bot → SKILL.md → `spoke add` self-install → provenance in
 | **3 — Sharing** ✅ | **shipped**: `packages/starter-bots` (oncall / pr-reviewer / wiki-keeper / council — the second-opinion capability, `mode: subagent` with tailored permission maps); link/file import — `spoke add <https?://url \| file://path \| bare .md>` curl-fetches and wraps lone .md as a one-agent package | phase 1 | done |
 | **4 — Routines** ✅ | **shipped**: patrol (5-field cron UTC + `file-change:` watches) fires real dispatches with receipts; `POST /api/duties/<name>/fire` is the in-app webhook — settings "fire" button + external triggers share one dispatch path | phase 2 | done |
 | **4a — Provider layer (zero-cost)** ✅ | **shipped**: `openai` kind — any OpenAI-compatible endpoint (`base_url`+`model`+`api_key_env`, curl-transported, freellmapi/codex-router patterns plug in declaratively) + **CodexBar-style limit windows** (`limit`/`window` per provider → `~/.nest/usage/` counters; spent providers sit out until reset, shown on settings tab + `nest providers`) + first-run commented `providers.toml` seed | phase 2b | done |
-| **5 — Cloud tier (optional)** | headless `nest-agent` binary; hosted registry; external triggers | phase 3 + backend | 2–3 sessions |
+| **5 — Cloud tier (optional)** | headless `nest-agent` binary ✅ (`nest daemon` — patrol + remotes, no HTTP, launchd/systemd unit); hosted registry + external triggers need a real backend | phase 3 + backend | local tier done |
 | **6 — Self-improving bots (the differentiator)** | **hermes-agent's learning loop**: bots author their own skills — Spoke packages written by bots (a bot finishes a hard task → extracts a reusable `SKILL.md` → `spoke add` self-installs → `agent.lock` records provenance "authored-by: <bot>"). The roster literally gets smarter with use | phase 3 + 4 | 1–2 sessions |
 | **B — Debloat (parallel)** | Tier A config (~95–115 MB) + installer fix + packaging audit | private repo's build config | <1 session |
 | **B2 — Debloat tier B** | jimp/otel/reconciler audit + fixes | source read access | <1 session |

@@ -831,12 +831,10 @@ pub fn serve(dirs: NestDirs, cwd: PathBuf, port: u16) -> Result<()> {
     serve_on(dirs, cwd, listener)
 }
 
-/// Serve on an already-bound listener — the caller owns the port
-/// reservation, so there's no bind-time race with another process.
-pub fn serve_on(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) -> Result<()> {
-    let shell = Arc::new(Shell::new(dirs, cwd));
-    shell.ensure_eggbot();
-    shell.ensure_providers();
+/// The background loops every NEST runtime owns: remote bridges' inbox
+/// spool + the routine patrol. `serve_on` runs them alongside HTTP;
+/// `daemon` runs them with no UI at all.
+fn spawn_watchers(shell: &Arc<Shell>) {
     {
         let shell = shell.clone();
         thread::spawn(move || remotes_watch(shell));
@@ -847,6 +845,15 @@ pub fn serve_on(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) -
             patrol::run(&shell.duties, |d| shell.fire_duty(d));
         });
     }
+}
+
+/// Serve on an already-bound listener — the caller owns the port
+/// reservation, so there's no bind-time race with another process.
+pub fn serve_on(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) -> Result<()> {
+    let shell = Arc::new(Shell::new(dirs, cwd));
+    shell.ensure_eggbot();
+    shell.ensure_providers();
+    spawn_watchers(&shell);
     let server = Server::from_listener(listener, None)
         .map_err(|e| anyhow::anyhow!("cannot serve on listener: {e}"))?;
     // each request gets its own thread — an open SSE stream must never
@@ -863,6 +870,24 @@ pub fn serve_on(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) -
         });
     }
     Ok(())
+}
+
+/// Headless runtime — the watchers with no HTTP at all. This is the
+/// "bots that work while the laptop lid is closed" unit: launchd or
+/// systemd keeps one process alive, routines fire on schedule, remote
+/// bridges get their replies in outbox/.
+pub fn daemon(dirs: NestDirs, cwd: PathBuf) -> Result<()> {
+    let shell = Arc::new(Shell::new(dirs, cwd));
+    shell.ensure_eggbot();
+    shell.ensure_providers();
+    spawn_watchers(&shell);
+    println!(
+        "nest daemon — {} routine(s) armed, watching remotes; ctrl-c to stop",
+        shell.duties.len()
+    );
+    loop {
+        thread::park();
+    }
 }
 
 /// Loopback-only writes: a page on another origin can fire a form/fetch
