@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use spoke_core::manifest::ToolPolicy;
 
+use crate::home::NestDirs;
 use crate::peep::Peep;
 use crate::spec::AgentSpec;
 
@@ -41,7 +42,7 @@ pub trait Perch: Send + Sync {
         which(bin).is_some()
     }
     /// Build the spawn command for a bot + task.
-    fn launch(&self, agent: &AgentSpec, task: &str) -> Launch;
+    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch;
     /// One output line → one peep. `None` skips the line.
     fn parse(&self, line: &str) -> Option<Peep>;
     /// The one-click install command (run via `sh -c`), when this perch
@@ -51,8 +52,9 @@ pub trait Perch: Send + Sync {
     }
 }
 
-/// PATH lookup — is `bin` an *executable* file somewhere on PATH?
-fn which(bin: &str) -> Option<PathBuf> {
+/// PATH lookup honoring PATHEXT on Windows — the shared "is this
+/// executable installed" check for perches and providers.
+pub fn which(bin: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|paths| {
         env::split_paths(&paths)
             .find_map(|dir| candidates(&dir, bin).into_iter().find(|c| is_executable(c)))
@@ -99,8 +101,11 @@ pub fn is_exec_pub(path: &std::path::Path) -> bool {
     is_executable(path)
 }
 
-/// The prompt every perch feeds its harness: persona + tool policy + task.
-pub fn build_prompt(agent: &AgentSpec, task: &str) -> String {
+/// The prompt every perch feeds its harness: persona + tool policy +
+/// skills + task. A declared skill's `SKILL.md` resolves project-first
+/// (same precedence as agents); a missing one is named in the prompt
+/// so the run reports it instead of silently ignoring it.
+pub fn build_prompt(agent: &AgentSpec, task: &str, dirs: &NestDirs) -> String {
     let mut prompt = String::new();
     prompt.push_str(agent.body.trim());
     if !agent.permissions.is_empty() {
@@ -112,6 +117,15 @@ pub fn build_prompt(agent: &AgentSpec, task: &str) -> String {
                 ToolPolicy::Deny => "never",
             };
             prompt.push_str(&format!("- {tool}: {word}\n"));
+        }
+    }
+    if !agent.skills.is_empty() {
+        prompt.push_str("\n\n## Skills\n\n");
+        for name in &agent.skills {
+            match dirs.skill(name).and_then(|p| std::fs::read_to_string(p).ok()) {
+                Some(body) => prompt.push_str(&format!("### {name}\n\n{}\n\n", body.trim())),
+                None => prompt.push_str(&format!("- {name}: missing — no SKILL.md found\n")),
+            }
         }
     }
     prompt.push_str(&format!("\n\n## Task\n\n{task}\n"));
@@ -147,11 +161,11 @@ impl Perch for ClaudeCode {
     fn binary(&self) -> &'static str {
         "claude"
     }
-    fn launch(&self, agent: &AgentSpec, task: &str) -> Launch {
+    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
         let (allow, deny) = tool_lists(agent);
         let mut args = vec![
             "-p".into(),
-            build_prompt(agent, task),
+            build_prompt(agent, task, dirs),
             "--output-format".into(),
             "stream-json".into(),
             "--verbose".into(),
@@ -202,10 +216,10 @@ impl Perch for Codex {
     fn binary(&self) -> &'static str {
         "codex"
     }
-    fn launch(&self, agent: &AgentSpec, task: &str) -> Launch {
+    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
         Launch {
             program: "codex".into(),
-            args: vec!["exec".into(), "--json".into(), build_prompt(agent, task)],
+            args: vec!["exec".into(), "--json".into(), build_prompt(agent, task, dirs)],
             env: BTreeMap::new(),
         }
     }
@@ -235,10 +249,10 @@ impl Perch for OpenCode {
     fn binary(&self) -> &'static str {
         "opencode"
     }
-    fn launch(&self, agent: &AgentSpec, task: &str) -> Launch {
+    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
         Launch {
             program: "opencode".into(),
-            args: vec!["run".into(), build_prompt(agent, task)],
+            args: vec!["run".into(), build_prompt(agent, task, dirs)],
             env: BTreeMap::new(),
         }
     }
@@ -260,9 +274,9 @@ impl Perch for Echo {
     fn binary(&self) -> &'static str {
         ""
     }
-    fn launch(&self, agent: &AgentSpec, task: &str) -> Launch {
+    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
         let mut env = BTreeMap::new();
-        env.insert("NEST_PROMPT".into(), build_prompt(agent, task));
+        env.insert("NEST_PROMPT".into(), build_prompt(agent, task, dirs));
         Launch {
             program: "sh".into(),
             args: vec!["-c".into(), "echo \"$NEST_PROMPT\"".into()],
@@ -284,7 +298,7 @@ impl Perch for Fail {
     fn binary(&self) -> &'static str {
         ""
     }
-    fn launch(&self, _agent: &AgentSpec, _task: &str) -> Launch {
+    fn launch(&self, _agent: &AgentSpec, _task: &str, _dirs: &NestDirs) -> Launch {
         Launch {
             program: "sh".into(),
             args: vec![
@@ -368,7 +382,8 @@ mod tests {
     #[test]
     fn prompt_carries_persona_policy_and_task() {
         let agent = spec(&[("bash", ToolPolicy::Ask), ("read", ToolPolicy::Allow)]);
-        let prompt = build_prompt(&agent, "do the thing");
+        let dirs = NestDirs::resolve(&PathBuf::from("/"), Some(tempfile::tempdir().unwrap().path().to_path_buf()));
+        let prompt = build_prompt(&agent, "do the thing", &dirs);
         assert!(prompt.contains("You are a test bot."));
         assert!(prompt.contains("bash: ask-first"));
         assert!(prompt.contains("read: allow"));
@@ -382,7 +397,8 @@ mod tests {
             ("Write", ToolPolicy::Deny),
             ("Edit", ToolPolicy::Ask),
         ]);
-        let launch = ClaudeCode.launch(&agent, "task");
+        let dirs = NestDirs::resolve(&PathBuf::from("/"), Some(tempfile::tempdir().unwrap().path().to_path_buf()));
+        let launch = ClaudeCode.launch(&agent, "task", &dirs);
         let joined = launch.args.join(" ");
         assert!(joined.contains("--allowedTools Bash"));
         assert!(joined.contains("--disallowedTools Edit,Write"));

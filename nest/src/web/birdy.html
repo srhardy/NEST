@@ -1,0 +1,69 @@
+<!doctype html>
+<!-- the desktop birdy — the whole nest shrunk to one mascot.
+     served by the shell at /birdy for the desktop wrapper's float window. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html,body { margin:0; height:100%; background:transparent; overflow:hidden; }
+  body { display:grid; place-items:center; }
+  .bird { width:90%; height:90%; }
+  .bird svg { width:100%; height:100%; overflow:visible; }
+  .body { fill:#fff; }
+  .face { fill:#111; }
+  .eye  { fill:#fff; animation:blink 4s infinite; }
+  .wing { fill:#fff; transform-origin:30% 60%; }
+  .beak,.crest { fill:#7cf; }
+  @keyframes blink { 0%,92%,100%{transform:scaleY(1)} 95%{transform:scaleY(.1)} }
+  .bird { animation:bob 3s ease-in-out infinite; }
+  @keyframes bob { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+  .working .wing { animation:flap .6s infinite; }
+  @keyframes flap { 0%,100%{transform:rotate(0)} 50%{transform:rotate(-25deg)} }
+  .shadow { position:fixed; bottom:4%; left:50%; transform:translateX(-50%);
+    width:60%; height:8px; border-radius:50%; background:rgba(255,255,255,.18);
+    animation:shadow 3s ease-in-out infinite; }
+  @keyframes shadow { 0%,100%{transform:translateX(-50%) scaleX(1)} 50%{transform:translateX(-50%) scaleX(.8)} }
+</style>
+</head>
+<body>
+  <div class="bird" id="b"><svg viewBox="0 0 48 48">
+    <ellipse class="body" cx="24" cy="28" rx="16" ry="15"/>
+    <ellipse class="face" cx="24" cy="26" rx="9" ry="7"/>
+    <circle class="eye" cx="21" cy="25" r="2"/><circle class="eye" cx="27" cy="25" r="2"/>
+    <polygon class="beak" points="24,29 20,33 28,33"/>
+    <polygon class="crest" points="22,10 24,4 26,10"/>
+    <ellipse class="wing" cx="10" cy="30" rx="5" ry="8"/>
+  </svg></div>
+  <div class="shadow"></div>
+<script>
+  const tauriInvoke = (cmd) => {
+    const t = window.__TAURI_INTERNALS__ || (window.__TAURI__ && window.__TAURI__.core);
+    if (t && t.invoke) t.invoke(cmd);
+  };
+  // drag anywhere — but only once the pointer actually moves,
+  // so a plain click can still mean "open the nest"
+  let down = false, moved = false;
+  addEventListener('mousedown', () => { down = true; moved = false; });
+  addEventListener('mouseup',   () => { down = false; });
+  addEventListener('mousemove', () => {
+    if (down && !moved) {
+      moved = true;
+      try {
+        const w = window.__TAURI__ && window.__TAURI__.window;
+        if (w) w.getCurrentWindow().startDragging();
+      } catch(_) {}
+    }
+  });
+  addEventListener('click', () => { if (!moved) tauriInvoke('reopen_main'); });
+  // flap while any bot is working — the birdy mirrors the roster's mood
+  async function mood() {
+    try {
+      const s = await (await fetch('/api/state')).json();
+      const busy = (s.agents||[]).some(a => a.state === 'working');
+      document.getElementById('b').classList.toggle('working', busy);
+    } catch(e) {}
+  }
+  mood(); setInterval(mood, 4000);
+</script>
+</body>
+</html>

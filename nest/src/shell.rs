@@ -30,6 +30,8 @@ use crate::spec::{self, AgentSpec};
 
 /// The embedded single-page app.
 const INDEX: &str = include_str!("web/index.html");
+/// The desktop-birdy page for the wrapper's float window.
+const BIRDY: &str = include_str!("web/birdy.html");
 
 /// A run in progress (or finished) — the events the page subscribes to.
 struct Run {
@@ -183,6 +185,29 @@ impl Shell {
             patrol_warnings,
             seq: Mutex::new(0),
         }
+    }
+
+    /// One dispatch path for routines: the patrol's timer and the
+    /// `/api/duties/<name>/fire` webhook both land here.
+    fn fire_duty(&self, d: &patrol::Duty) {
+        let prompt = format!("[routine '{}'] {}", d.spec.name, d.spec.prompt);
+        let _ = match &d.spec.bot {
+            Some(bot) => self.start_hatch(bot, &prompt, None),
+            None => self.start_brood(&prompt, None),
+        };
+    }
+
+    /// First run plants a commented providers.toml — the format is
+    /// learned by example, not by reading docs.
+    fn ensure_providers(&self) {
+        let path = self.dirs.home.join("providers.toml");
+        if path.exists() {
+            return;
+        }
+        let _ = std::fs::write(
+            path,
+            "# providers — the free-first router tries these top-to-bottom, first answer wins.\n#\n# [[providers]]            # any local CLI: prompt on stdin, answer on stdout\n# name = \"local-helper\"\n# kind = \"command\"\n# program = \"ollama\"       # or llm, claude -p, …\n# args = [\"run\", \"qwen3\"]\n# cost = \"free\"            # free | cheap | paid — free always answers first\n#\n# [[providers]]            # ollama shorthand — the free-forever local\n# name = \"ollama-qwen\"\n# kind = \"ollama\"\n# model = \"qwen3\"\n# cost = \"free\"\n#\n# [[providers]]            # any OpenAI-compatible endpoint — free tiers included\n# name = \"openrouter-free\"\n# kind = \"openai\"\n# base_url = \"https://openrouter.ai/api/v1\"\n# model = \"deepseek/deepseek-chat-v3-0324:free\"\n# api_key_env = \"OPENROUTER_KEY\"   # env var name, never the key itself\n# cost = \"free\"\n# limit = 50               # CodexBar-style cap…\n# window = \"24h\"           # …per rolling window (5h, 24h, 7d); spent providers sit out\n",
+        );
     }
 
     /// Seed the in-house bot: if the roster has no `eggbot`, write one to
@@ -377,9 +402,9 @@ impl Shell {
         });
         self.register_run(run.clone());
         let (run_id, cwd, roost_dir) = (run.id.clone(), self.cwd.clone(), self.dirs.roost());
-        let task = task.to_string();
+        let (task, dirs) = (task.to_string(), self.dirs.clone());
         thread::spawn(move || {
-            let receipt = match hatchling::hatch(&agent, &task, perch.as_ref(), &cwd) {
+            let receipt = match hatchling::hatch(&agent, &task, perch.as_ref(), &cwd, &dirs) {
                 Ok(mut h) => {
                     let run2 = run.clone();
                     let name = agent.name.clone();
@@ -645,10 +670,10 @@ impl Shell {
         });
         self.register_run(run.clone());
         let (run_id, cwd, roost_dir) = (run.id.clone(), self.cwd.clone(), self.dirs.roost());
-        let task = task.to_string();
+        let (task, dirs) = (task.to_string(), self.dirs.clone());
         thread::spawn(move || {
             let run2 = run.clone();
-            match brood.dispatch(&task, perch.as_ref(), &cwd, move |bot, peep| {
+            match brood.dispatch(&task, perch.as_ref(), &cwd, &dirs, move |bot, peep| {
                 run2.emit_peep(bot, peep)
             }) {
                 Ok(dispatch) => {
@@ -796,8 +821,20 @@ fn remotes_watch(shell: Arc<Shell>) {
 
 /// Serve the shell until killed.
 pub fn serve(dirs: NestDirs, cwd: PathBuf, port: u16) -> Result<()> {
-    let shell = Arc::new(Shell::new(dirs, cwd));
-    shell.ensure_eggbot();
+    let addr = format!("127.0.0.1:{port}")
+        .to_socket_addrs()?
+        .next()
+        .context("cannot resolve shell address")?;
+    let listener = std::net::TcpListener::bind(addr)
+        .map_err(|e| anyhow::anyhow!("cannot bind {addr}: {e}"))?;
+    println!("nest shell listening on http://127.0.0.1:{port}");
+    serve_on(dirs, cwd, listener)
+}
+
+/// The background loops every NEST runtime owns: remote bridges' inbox
+/// spool + the routine patrol. `serve_on` runs them alongside HTTP;
+/// `daemon` runs them with no UI at all.
+fn spawn_watchers(shell: &Arc<Shell>) {
     {
         let shell = shell.clone();
         thread::spawn(move || remotes_watch(shell));
@@ -805,22 +842,20 @@ pub fn serve(dirs: NestDirs, cwd: PathBuf, port: u16) -> Result<()> {
     {
         let shell = shell.clone();
         thread::spawn(move || {
-            patrol::run(&shell.duties, |d| {
-                let prompt = format!("[routine '{}'] {}", d.spec.name, d.spec.prompt);
-                match &d.spec.bot {
-                    Some(bot) => shell.start_hatch(bot, &prompt, None).map(|_| ()),
-                    None => shell.start_brood(&prompt, None).map(|_| ()),
-                }
-                .ok();
-            });
+            patrol::run(&shell.duties, |d| shell.fire_duty(d));
         });
     }
-    let addr = format!("127.0.0.1:{port}")
-        .to_socket_addrs()?
-        .next()
-        .context("cannot resolve shell address")?;
-    let server = Server::http(addr).map_err(|e| anyhow::anyhow!("cannot bind {addr}: {e}"))?;
-    println!("nest shell listening on http://127.0.0.1:{port}");
+}
+
+/// Serve on an already-bound listener — the caller owns the port
+/// reservation, so there's no bind-time race with another process.
+pub fn serve_on(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) -> Result<()> {
+    let shell = Arc::new(Shell::new(dirs, cwd));
+    shell.ensure_eggbot();
+    shell.ensure_providers();
+    spawn_watchers(&shell);
+    let server = Server::from_listener(listener, None)
+        .map_err(|e| anyhow::anyhow!("cannot serve on listener: {e}"))?;
     // each request gets its own thread — an open SSE stream must never
     // serialize the rest of the API behind it
     for request in server.incoming_requests() {
@@ -835,6 +870,24 @@ pub fn serve(dirs: NestDirs, cwd: PathBuf, port: u16) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// Headless runtime — the watchers with no HTTP at all. This is the
+/// "bots that work while the laptop lid is closed" unit: launchd or
+/// systemd keeps one process alive, routines fire on schedule, remote
+/// bridges get their replies in outbox/.
+pub fn daemon(dirs: NestDirs, cwd: PathBuf) -> Result<()> {
+    let shell = Arc::new(Shell::new(dirs, cwd));
+    shell.ensure_eggbot();
+    shell.ensure_providers();
+    spawn_watchers(&shell);
+    println!(
+        "nest daemon — {} routine(s) armed, watching remotes; ctrl-c to stop",
+        shell.duties.len()
+    );
+    loop {
+        thread::park();
+    }
 }
 
 /// Loopback-only writes: a page on another origin can fire a form/fetch
@@ -951,6 +1004,9 @@ fn route<'a>(
     }
     match (method, path) {
         (&Method::Get, "/") => respond(INDEX.to_string(), "text/html; charset=utf-8", 200),
+        (&Method::Get, "/birdy") => {
+            respond(BIRDY.to_string(), "text/html; charset=utf-8", 200)
+        }
         (&Method::Get, "/api/state") => json_response(shell.state_json()),
         (&Method::Get, "/api/runs") => json_response(shell.runs_json()),
         (&Method::Get, "/api/settings") => {
@@ -1033,6 +1089,19 @@ fn route<'a>(
             match res {
                 Ok(id) => json_response(json!({"id": id})),
                 Err(e) => json_response(json!({"error": format!("{e:#}")})),
+            }
+        }
+        // routine webhook — POST /api/duties/<name>/fire runs the routine
+        // now (the settings "fire" button and external triggers share it)
+        (&Method::Post, p) if p.starts_with("/api/duties/") && p.ends_with("/fire") => {
+            let name = &p["/api/duties/".len()..p.len() - "/fire".len()];
+            match shell.duties.iter().find(|d| d.spec.name == name) {
+                Some(d) => {
+                    d.stamp(patrol::now());
+                    shell.fire_duty(d);
+                    json_response(json!({"fired": name}))
+                }
+                None => json_response(json!({"error": "no such routine"})),
             }
         }
         (&Method::Get, p) if p.starts_with("/api/runs/") && p.ends_with("/events") => {

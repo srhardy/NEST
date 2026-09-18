@@ -197,11 +197,11 @@
         <p style="color:var(--dim);margin:4px 0 0">detected on this machine; installs stream into the activity tab.</p>
         <div class="engines" id="engines"></div>
         <h3 style="margin-top:10px">providers — the free-first router</h3>
-        <p style="color:var(--dim);margin:4px 0 0">declared in providers.toml; tried in this order, first answer wins.</p>
-        <table class="runs" style="margin-top:10px"><thead><tr><th>provider</th><th>kind</th><th>cost</th><th>status</th></tr></thead><tbody id="providers"></tbody></table>
+        <p style="color:var(--dim);margin:4px 0 0">declared in providers.toml; tried in this order, first answer wins. limits are per-window — a spent provider sits out until its reset.</p>
+        <table class="runs" style="margin-top:10px"><thead><tr><th>provider</th><th>kind</th><th>cost</th><th>model</th><th>window</th><th>status</th></tr></thead><tbody id="providers"></tbody></table>
         <h3 style="margin-top:18px">routines — the patrol</h3>
         <p style="color:var(--dim);margin:4px 0 0">declared in automations.toml; each firing is a normal run — receipts in activity.</p>
-        <table class="runs" style="margin-top:10px"><thead><tr><th>name</th><th>trigger</th><th>bot</th><th>last fired</th></tr></thead><tbody id="duties"></tbody></table>
+        <table class="runs" style="margin-top:10px"><thead><tr><th>name</th><th>trigger</th><th>bot</th><th>last fired</th><th></th></tr></thead><tbody id="duties"></tbody></table>
         <h3 style="margin-top:10px">power policy</h3>
         <div class="toggles">
           <div><span>free-first router — free tier first, cheapest paid fallback</span><span class="switch"></span></div>
@@ -393,6 +393,7 @@ async function send() {
 async function refresh() {
   const s = await api('/api/state');
   state.agents = s.agents; state.perches = s.perches;
+  state.duties = s.duties; state.providers = s.providers;
   renderRoster();
   const sb = $('#statusbar');
   const working = s.agents.filter(a => a.state === 'working').map(a => a.name);
@@ -420,11 +421,16 @@ async function loadSettings() {
     </div>`).join('');
   document.querySelectorAll('[data-install]').forEach(b => b.onclick = () => installEngine(b.dataset.install));
   $('#duties').innerHTML = (state.duties || []).map(d =>
-    `<tr><td>${esc(d.name)}</td><td>${esc(d.trigger)}</td><td>${esc(d.bot || 'brood')}</td><td>${d.last_fired ? new Date(d.last_fired*1000).toLocaleTimeString() : '—'}</td></tr>`
-  ).join('') || '<tr><td colspan="4" style="color:var(--dim)">no automations.toml — schedules and file watches show up here</td></tr>';
+    `<tr><td>${esc(d.name)}</td><td>${esc(d.trigger)}</td><td>${esc(d.bot || 'brood')}</td><td>${d.last_fired ? new Date(d.last_fired*1000).toLocaleTimeString() : '—'}</td><td><button class="pill" data-fire="${esc(d.name)}">fire</button></td></tr>`
+  ).join('') || '<tr><td colspan="5" style="color:var(--dim)">no automations.toml — schedules and file watches show up here</td></tr>';
+  document.querySelectorAll('[data-fire]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    await fetch('/api/duties/' + encodeURIComponent(b.dataset.fire) + '/fire', {method:'POST'});
+    b.disabled = false; await refresh(); loadSettings();
+  });
   $('#providers').innerHTML = (state.providers || []).map(p =>
-    `<tr><td>${esc(p.name)}</td><td>${esc(p.kind)}</td><td><span class="tag ${p.cost === 'free' ? 'done' : ''}">${esc(p.cost)}</span></td><td>${p.available ? 'ready' : 'not installed'}</td></tr>`
-  ).join('') || '<tr><td colspan="4" style="color:var(--dim)">no providers.toml — echo stub answers until you add one</td></tr>';
+    `<tr><td>${esc(p.name)}</td><td>${esc(p.kind)}</td><td><span class="tag ${p.cost === 'free' ? 'done' : ''}">${esc(p.cost)}</span></td><td>${esc(p.model || '—')}</td><td>${esc(p.usage || '—')}</td><td>${p.exhausted ? 'over limit' : p.available ? 'ready' : 'not installed'}</td></tr>`
+  ).join('') || '<tr><td colspan="6" style="color:var(--dim)">no providers.toml — echo stub answers until you add one</td></tr>';
 }
 
 // a 1-click install is a run like any other — its peeps land in activity

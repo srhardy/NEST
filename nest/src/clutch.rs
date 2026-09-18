@@ -20,13 +20,14 @@ pub fn run(
     tasks: &[String],
     perch: &(dyn Perch + Sync),
     cwd: &Path,
+    dirs: &crate::home::NestDirs,
 ) -> Vec<Receipt> {
     let (tx, rx) = channel::<Receipt>();
     thread::scope(|scope| {
         for task in tasks {
             let tx = tx.clone();
             scope.spawn(move || {
-                let receipt = match hatchling::hatch(agent, task, perch, cwd) {
+                let receipt = match hatchling::hatch(agent, task, perch, cwd, dirs) {
                     Ok(mut h) => hatchling::wait(&mut h, task, perch, agent.max_steps, |_| {}),
                     Err(e) => Receipt::spawn_failed(agent, task, perch, &format!("{e:#}")),
                 };

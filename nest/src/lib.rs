@@ -13,13 +13,16 @@
 //! - [`brood`] — the dispatch council: routes a task to the right bot and
 //!   walks the fallback ladder when one fails.
 //! - [`clutch`] — a batch of hatchlings run in parallel.
-//! - [`forage`] — the provider layer (fetches completions; the free-tier
-//!   failover proxy plugs in here later).
+//! - [`forage`] — the provider layer: free-first failover across
+//!   declared providers, any OpenAI-compatible endpoint included.
+//! - [`usage`] — per-provider limit windows (CodexBar-style): the router
+//!   skips a provider whose window is spent.
 //! - an *imprint* is a bot's first verified run — a bot that hasn't run
 //!   isn't done.
 
 pub mod brood;
 pub mod clutch;
+pub mod feather;
 pub mod forage;
 pub mod hatchling;
 pub mod home;
@@ -29,3 +32,4 @@ pub mod perch;
 pub mod roost;
 pub mod shell;
 pub mod spec;
+pub mod usage;

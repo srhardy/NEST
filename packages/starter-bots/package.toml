@@ -1,0 +1,23 @@
+name = "starter-bots"
+version = "0.1.0"
+description = "The first four bots every nest wants — an oncall responder, a PR reviewer, a wiki keeper, and the council for second opinions"
+tier = "curated"
+
+[source]
+path = "."
+
+[[agents]]
+name = "oncall"
+path = "agents/oncall.md"
+
+[[agents]]
+name = "pr-reviewer"
+path = "agents/pr-reviewer.md"
+
+[[agents]]
+name = "wiki-keeper"
+path = "agents/wiki-keeper.md"
+
+[[agents]]
+name = "council"
+path = "agents/council.md"

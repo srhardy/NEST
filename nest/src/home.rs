@@ -28,6 +28,18 @@ impl NestDirs {
         Self { project, home }
     }
 
+    /// Resolve a declared skill's SKILL.md, project first then
+    /// personal — same precedence as agents.
+    pub fn skill(&self, name: &str) -> Option<PathBuf> {
+        let rel = format!("{name}/SKILL.md");
+        let mut paths = Vec::new();
+        if let Some(p) = &self.project {
+            paths.push(p.join("skills").join(&rel));
+        }
+        paths.push(self.home.join("skills").join(&rel));
+        paths.into_iter().find(|p| p.is_file())
+    }
+
     /// Agent directories to scan, project first then personal.
     pub fn agent_dirs(&self) -> Vec<PathBuf> {
         let mut dirs = Vec::new();

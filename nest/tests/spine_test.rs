@@ -43,9 +43,10 @@ fn spec_with(name: &str, max_steps: Option<u32>) -> AgentSpec {
 fn echo_hatch_runs_to_done_and_leaves_a_receipt() {
     let tmp = tempfile::tempdir().unwrap();
     let cwd = tmp.path();
+    let dirs = NestDirs::resolve(cwd, Some(cwd.to_path_buf()));
     let agent = spec_with("echobot", None);
     let perch = Echo;
-    let mut h = hatchling::hatch(&agent, "say hi", &perch, cwd).unwrap();
+    let mut h = hatchling::hatch(&agent, "say hi", &perch, cwd, &dirs).unwrap();
     let mut saw_spawned = false;
     let mut saw_output = false;
     let receipt = hatchling::wait(&mut h, "say hi", &perch, None, |p| {
@@ -64,9 +65,10 @@ fn echo_hatch_runs_to_done_and_leaves_a_receipt() {
 #[test]
 fn fail_perch_records_failed() {
     let tmp = tempfile::tempdir().unwrap();
+    let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
     let agent = spec_with("doomed", None);
     let perch = Fail;
-    let mut h = hatchling::hatch(&agent, "try", &perch, tmp.path()).unwrap();
+    let mut h = hatchling::hatch(&agent, "try", &perch, tmp.path(), &dirs).unwrap();
     let receipt = hatchling::wait(&mut h, "try", &perch, None, |_| {});
     assert_eq!(receipt.status, Status::Failed);
 }
@@ -80,7 +82,7 @@ impl Perch for Stepper {
     fn binary(&self) -> &'static str {
         ""
     }
-    fn launch(&self, _a: &AgentSpec, _t: &str) -> nest::perch::Launch {
+    fn launch(&self, _a: &AgentSpec, _t: &str, _d: &NestDirs) -> nest::perch::Launch {
         nest::perch::Launch {
             program: "sh".into(),
             args: vec![
@@ -101,9 +103,10 @@ impl Perch for Stepper {
 #[test]
 fn step_budget_kills_the_run() {
     let tmp = tempfile::tempdir().unwrap();
+    let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
     let agent = spec_with("loopy", Some(2));
     let perch = Stepper;
-    let mut h = hatchling::hatch(&agent, "loop", &perch, tmp.path()).unwrap();
+    let mut h = hatchling::hatch(&agent, "loop", &perch, tmp.path(), &dirs).unwrap();
     let mut budget_hit = false;
     let receipt = hatchling::wait(&mut h, "loop", &perch, agent.max_steps, |p| {
         budget_hit |= matches!(p, Peep::BudgetExceeded { .. });
@@ -116,6 +119,7 @@ fn step_budget_kills_the_run() {
 #[test]
 fn brood_falls_back_when_first_candidate_fails() {
     let tmp = tempfile::tempdir().unwrap();
+    let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
     let agents = vec![spec_with("primary", None), spec_with("backup", None)];
     let routes = vec![spoke_core::manifest::Route {
         patterns: vec!["task".into()],
@@ -139,7 +143,7 @@ fn brood_falls_back_when_first_candidate_fails() {
             } else {
                 &echo
             };
-            let mut h = hatchling::hatch(&target.agent, "t", perch, tmp.path()).unwrap();
+            let mut h = hatchling::hatch(&target.agent, "t", perch, tmp.path(), &dirs).unwrap();
             let r = hatchling::wait(&mut h, "t", perch, None, |_| {});
             attempts.push((target.agent.name.clone(), r.status));
             if r.status == Status::Done {

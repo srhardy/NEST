@@ -50,20 +50,34 @@ Everything Spoke projects, the engine consumes:
   real install streamed as a run (`POST /api/onboarding`,
   `POST /api/perches/install`).
 - **Providers** — `providers.toml` declares free/cheap/paid backends
-  (`command` or `ollama`); `forage`'s router tries available ones in
-  free-first order with failover (`GET /api/state`, `nest providers`,
+  (`command`, `ollama`, or `openai` for any OpenAI-compatible endpoint:
+  `base_url` + `model`, key via `api_key_env`); `forage`'s router tries
+  available ones in free-first order with failover. `limit`/`window`
+  ("5h", "24h", "7d") adds a CodexBar-style cap per provider — spent
+  windows sit out until reset, tracked in `~/.nest/usage/` and shown
+  on the settings tab (`GET /api/state`, `nest providers`,
   `nest ask --provider x`).
 - **Routines** — `automations.toml` schedules (5-field cron, UTC) and
   `file-change:` watches run as ordinary dispatches via the patrol;
-  armed triggers are listed under settings.
+  `POST /api/duties/<name>/fire` fires one now (the settings button
+  and external webhooks share it); armed triggers list under settings.
+- **Daemon** — `nest daemon` runs the watchers (patrol + remotes) with
+  no HTTP at all: the launchd/systemd unit for "bots that work while
+  the lid is closed"; receipts still land in the roost.
+- **Feather** — `nest feather <run-id>` distills a finished run into a
+  reusable `~/.nest/skills/<name>/SKILL.md` — provenance frontmatter
+  (`authored-by`, `run`) records which bot earned it; another bot picks
+  it up by listing `skills: [name]` in its frontmatter. The roster gets
+  smarter with use.
 - **Remotes** — the shell watches `~/.nest/remotes/<name>/inbox/*.md`:
   each file is brood-dispatched and the reply written to
   `outbox/<chat|channel>.txt`. The `remotes` package ships stdlib-only
   bridges (telegram / slack / watch) that own the polling side.
 
-Native chrome (taskbar icon, floating desktop birdy, OS notifications)
-arrives with the desktop wrapper — the web shell embeds unchanged inside
-it.
+Native chrome lives in `desktop/` (Tauri): the same shell embedded
+in-process — taskbar icon with a bird menu, close-to-background, a
+floating always-on-top **birdy** mascot (drag to move, click to reopen,
+flaps while bots work), and OS notifications on new receipts.
 
 ## The `nest` CLI (Expert-mode passthrough)
 
@@ -76,6 +90,7 @@ nest roost                            # recent runs (receipts)
 nest imprint boss "first look"        # first verified run — 🐣 imprinted
 nest ask "prompt"                     # routed provider call (free-first failover)
 nest providers                        # declared backends + readiness
+nest feather <run-id> [--name slug]   # distill a run into a skill
 ```
 
 Flags: `--home` (personal `.nest/` dir, or `NEST_HOME`), `--cwd` (run

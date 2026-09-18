@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reopen-main"
+description = "Enables the reopen_main command without any pre-configured scope."
+commands.allow = ["reopen_main"]
+
+[[permission]]
+identifier = "deny-reopen-main"
+description = "Denies the reopen_main command without any pre-configured scope."
+commands.deny = ["reopen_main"]

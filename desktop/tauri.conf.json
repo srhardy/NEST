@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NEST",
+  "version": "0.1.0",
+  "identifier": "nest.app",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://127.0.0.1:4747",
+    "beforeBuildCommand": "",
+    "frontendDist": "../nest/src/web"
+  },
+  "app": {
+    "windows": [],
+    "withGlobalTauri": true,
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"],
+    "resources": []
+  }
+}
