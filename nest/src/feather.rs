@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn feathers_a_run_into_skills() {
         let home = tempfile::tempdir().unwrap();
-        let dirs = crate::home::NestDirs::resolve(&std::path::Path::new("/"), Some(home.path().to_path_buf()));
+        let dirs = crate::home::NestDirs::resolve(std::path::Path::new("/"), Some(home.path().to_path_buf()));
         roost::record(&dirs.roost(), &receipt("run-abc123")).unwrap();
         let dir = feather(&dirs, "run-abc123", Some("docs-sync"), false).unwrap();
         let body = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn id_prefix_resolves_and_ambiguity_errors() {
         let home = tempfile::tempdir().unwrap();
-        let dirs = crate::home::NestDirs::resolve(&std::path::Path::new("/"), Some(home.path().to_path_buf()));
+        let dirs = crate::home::NestDirs::resolve(std::path::Path::new("/"), Some(home.path().to_path_buf()));
         roost::record(&dirs.roost(), &receipt("run-aaa")).unwrap();
         roost::record(&dirs.roost(), &receipt("run-aab")).unwrap();
         assert!(find_receipt(&dirs, "run-aaa").is_ok());
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn existing_skills_need_force() {
         let home = tempfile::tempdir().unwrap();
-        let dirs = crate::home::NestDirs::resolve(&std::path::Path::new("/"), Some(home.path().to_path_buf()));
+        let dirs = crate::home::NestDirs::resolve(std::path::Path::new("/"), Some(home.path().to_path_buf()));
         roost::record(&dirs.roost(), &receipt("run-abc123")).unwrap();
         feather(&dirs, "run-abc123", Some("docs-sync"), false).unwrap();
         // second feather with the same name refuses rather than clobbering
