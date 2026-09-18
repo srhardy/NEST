@@ -177,7 +177,10 @@ mcp = []
 **Install semantics**
 
 ```
-spoke add <path|name>
+spoke add <path|name|url>
+  ├─ spec      → https?:// or file:// URLs are fetched (curl) to ~/.spoke/tmp/;
+  │              a bare .md file wraps as a one-agent package (name from
+  │              frontmatter, else filename)
   ├─ resolve   → manifest validated
   ├─ fetch     → ~/.spoke/packages/<name>/<version>/   (copy or git clone)
   ├─ collect   → text files only; binary/unreadable files are skipped

@@ -110,6 +110,7 @@ impl Brood {
         task: &str,
         perch: &dyn Perch,
         cwd: &Path,
+        dirs: &crate::home::NestDirs,
         on_peep: impl FnMut(&str, &Peep),
     ) -> Result<Dispatch> {
         let mut on_peep = on_peep;
@@ -120,7 +121,7 @@ impl Brood {
         let mut attempts = Vec::new();
         for target in candidates {
             let agent = &target.agent;
-            let receipt = match hatchling::hatch(agent, task, perch, cwd) {
+            let receipt = match hatchling::hatch(agent, task, perch, cwd, dirs) {
                 Ok(mut h) => hatchling::wait(&mut h, task, perch, agent.max_steps, |peep| {
                     on_peep(&agent.name, peep)
                 }),

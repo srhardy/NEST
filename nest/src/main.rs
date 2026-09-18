@@ -71,6 +71,19 @@ enum Cmd {
         #[arg(long, default_value = "4747")]
         port: u16,
     },
+    /// Headless runtime — patrol + remotes with no UI. For launchd/systemd.
+    Daemon,
+    /// Distill a finished run into a reusable skill (~/.nest/skills/<name>/SKILL.md).
+    Feather {
+        /// Run id (or unique prefix) from `nest roost`.
+        run_id: String,
+        /// Skill name (default: derived from the bot + run).
+        #[arg(long)]
+        name: Option<String>,
+        /// Replace an existing skill of the same name.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn peep_line(bot: &str, peep: &Peep) -> Option<String> {
@@ -124,7 +137,7 @@ fn run_bot(
     cwd: &std::path::Path,
 ) -> Result<hatchling::Receipt> {
     let perch = pick_perch(cli)?;
-    let mut h = hatchling::hatch(agent, task, perch.as_ref(), cwd)?;
+    let mut h = hatchling::hatch(agent, task, perch.as_ref(), cwd, dirs)?;
     let name = agent.name.clone();
     let receipt = hatchling::wait(&mut h, task, perch.as_ref(), agent.max_steps, |peep| {
         if let Some(line) = peep_line(&name, peep) {
@@ -190,7 +203,7 @@ fn main() -> Result<()> {
             for t in &plan {
                 println!("→ {} ({:?})", t.agent.name, t.via);
             }
-            let dispatch = brood.dispatch(&task, perch.as_ref(), &cwd, |bot, peep| {
+            let dispatch = brood.dispatch(&task, perch.as_ref(), &cwd, &dirs, |bot, peep| {
                 if let Some(line) = peep_line(bot, peep) {
                     println!("{line}");
                 }
@@ -236,12 +249,19 @@ fn main() -> Result<()> {
             let (dirs, _) = resolve(&cli)?;
             let router = Router::from_dirs(&dirs);
             for p in router.list() {
-                let mark = if p.available {
+                let mark = if p.exhausted {
+                    "over limit"
+                } else if p.available {
                     "ready"
                 } else {
                     "not installed"
                 };
-                println!("{:<18} {:<8} {:<6} {}", p.name, p.kind, p.cost, mark);
+                let model = p.model.as_deref().unwrap_or("-");
+                let usage = p.usage.as_deref().unwrap_or("-");
+                println!(
+                    "{:<18} {:<8} {:<6} {:<14} {:<22} {}",
+                    p.name, p.kind, p.cost, model, usage, mark
+                );
             }
         }
         Cmd::Ask { provider, prompt } => {
@@ -257,6 +277,15 @@ fn main() -> Result<()> {
         Cmd::Shell { port } => {
             let (dirs, cwd) = resolve(&cli)?;
             nest::shell::serve(dirs, cwd, *port)?;
+        }
+        Cmd::Feather { run_id, name, force } => {
+            let (dirs, _) = resolve(&cli)?;
+            let dir = nest::feather::feather(&dirs, run_id, name.as_deref(), *force)?;
+            println!("feathered {}", dir.display());
+        }
+        Cmd::Daemon => {
+            let (dirs, cwd) = resolve(&cli)?;
+            nest::shell::daemon(dirs, cwd)?;
         }
     }
     Ok(())

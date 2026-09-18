@@ -166,6 +166,18 @@ pub struct ProviderSpec {
     /// free | cheap | paid — the router tries free first, then cheap, then paid.
     #[serde(default = "default_cost")]
     pub cost: String,
+    /// kind = "openai": any OpenAI-compatible endpoint (POST {base_url}/chat/completions).
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// env var holding the key — the file never stores secrets.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// CodexBar-style limit: at most `limit` completions per `window`
+    /// ("5h", "24h", "7d") rolling from the first call in the window.
+    #[serde(default)]
+    pub limit: Option<u64>,
+    #[serde(default)]
+    pub window: Option<String>,
 }
 
 fn default_kind() -> String {
