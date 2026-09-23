@@ -222,7 +222,7 @@ impl Shell {
         }
         let _ = std::fs::write(
             dir.join("eggbot.md"),
-            "---\nname: eggbot\ntitle: Eggbot\njob: Walks you through building a bot, then writes it\npermissions.read: allow\npermissions.write: allow\npermissions.edit: allow\npermissions.bash: deny\n---\n\nYou are eggbot, the friendly bot-builder. Ask one question at a time: name, then one job, then how it talks, then what it may touch. One bot, one job — if it wants two jobs, suggest splitting it.\n",
+            "---\nname: eggbot\ntitle: Eggbot\njob: Walks you through building a bot, then writes it\npermissions:\n  read: allow\n  write: allow\n  edit: allow\n  bash: deny\n---\n\nYou are eggbot, the friendly bot-builder. Ask one question at a time: name, then one job, then how it talks, then what it may touch. One bot, one job — if it wants two jobs, suggest splitting it.\n",
         );
     }
 
@@ -1160,6 +1160,42 @@ fn route<'a>(
                 "path": path.display().to_string(),
                 "content": content,
             }))
+        }
+        // Expert mode's raw view: the real config files, verbatim, and
+        // whether each exists — "expert" must mean showing the truth.
+        (&Method::Get, "/api/expert") => {
+            let mut files: Vec<PathBuf> =
+                vec![shell.cwd.join("agent.toml"), shell.cwd.join("AGENTS.md")];
+            if let Some(p) = &shell.dirs.project {
+                files.extend(
+                    [
+                        "routing.toml",
+                        "automations.toml",
+                        "services.toml",
+                        "mcp.json",
+                    ]
+                    .iter()
+                    .map(|f| p.join(f)),
+                );
+            }
+            files.push(shell.dirs.home.join("providers.toml"));
+            let note = |p: &PathBuf| match p.file_name().and_then(|f| f.to_str()) {
+                Some("mcp.json") => "projected config — spoke writes it, nest doesn't read it yet",
+                Some("services.toml") => "declared services — boot on start not wired yet",
+                _ => "",
+            };
+            let files: Vec<Value> = files
+                .iter()
+                .map(|p| {
+                    json!({
+                        "path": p.display().to_string(),
+                        "exists": p.is_file(),
+                        "note": note(p),
+                        "content": std::fs::read_to_string(p).unwrap_or_default(),
+                    })
+                })
+                .collect();
+            json_response(json!({"files": files}))
         }
         (&Method::Post, "/api/settings") => {
             let body = read_body(request);

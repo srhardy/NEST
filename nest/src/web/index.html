@@ -110,9 +110,15 @@
   .engine .en { color:var(--hi); font-weight:600; margin:8px 0 4px; }
   .engine .ins { margin-top:10px; display:inline-block; padding:4px 14px; border-radius:14px; border:1px solid var(--edge); color:var(--dim); font-size:11px; }
   .engine.installed .ins { color:#34d399; border-color:#34d399; }
-  .toggles div { display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--edge); }
-  .switch { width:40px; height:20px; border-radius:10px; border:1px solid var(--accent); position:relative; }
+  .toggles div { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--edge); }
+  .switch { width:40px; height:20px; border-radius:10px; border:1px solid var(--accent); position:relative; cursor:pointer; flex-shrink:0; margin-left:14px; }
   .switch::after { content:""; position:absolute; right:2px; top:2px; width:14px; height:14px; border-radius:50%; background:var(--accent); }
+  .switch.off { border-color:var(--edge); }
+  .switch.off::after { left:2px; right:auto; background:var(--dim); }
+  #expert details { border:1px solid var(--edge); border-radius:10px; margin:6px 0; background:var(--card); }
+  #expert summary { padding:9px 12px; cursor:pointer; color:var(--text); font-size:12px; }
+  #expert summary .missing { color:var(--dim); }
+  #expert pre { margin:0 12px 12px; padding:10px; background:#000; border-radius:8px; font:11px/1.5 ui-monospace,monospace; overflow:auto; white-space:pre-wrap; }
 
   textarea#settings-md { width:100%; min-height:280px; background:var(--card); border:1px solid var(--edge); border-radius:10px; color:var(--text); font:inherit; padding:12px; resize:vertical; }
 
@@ -204,14 +210,17 @@
         <table class="runs" style="margin-top:10px"><thead><tr><th>name</th><th>trigger</th><th>bot</th><th>last fired</th><th></th></tr></thead><tbody id="duties"></tbody></table>
         <h3 style="margin-top:10px">power policy</h3>
         <div class="toggles">
-          <div><span>free-first router — free tier first, cheapest paid fallback</span><span class="switch"></span></div>
-          <div><span>auto api keys — generate + store when an engine needs one</span><span class="switch"></span></div>
-          <div><span>notifications — themed pop-ups when minimized</span><span class="switch"></span></div>
-          <div><span>follow OS theme</span><span class="switch"></span></div>
+          <div><span>free-first router — free tier first, cheapest paid fallback (off = providers.toml order)</span><span class="switch" data-key="router" data-on="free-first" data-off="declared"></span></div>
+          <div><span>notifications — desktop pop-ups on every receipt when minimized</span><span class="switch" data-key="notifications" data-on="on" data-off="off"></span></div>
         </div>
         <h3 style="margin:18px 0 8px">settings.md</h3>
         <textarea id="settings-md" spellcheck="false"></textarea>
         <div style="margin-top:8px"><button class="pill" id="save-settings">save</button></div>
+        <div id="expert" style="display:none;margin-top:20px">
+          <h3 style="margin:18px 0 8px">expert — the raw truth</h3>
+          <p style="color:var(--dim);margin:0 0 10px">the real config files, verbatim — what the nest actually reads. managed by spoke: <code>spoke diff</code> previews changes, <code>spoke sync</code> applies them, <code>spoke bot list</code> is the manifest view.</p>
+          <div id="expert-files"></div>
+        </div>
       </div>
     </div>
   </section>
@@ -423,10 +432,45 @@ async function featherRun(button) {
   toast(`feathered — ${r.dir}`);
 }
 
+const getSetting = (content, key, dflt) => {
+  const m = (content || '').match(new RegExp(`^\\s*${key}:\\s*(\\S+)`, 'm'));
+  return m ? m[1] : dflt;
+};
+
+// write one `key: value` line into settings.md and save it — toggles and
+// the mode pill persist through the same file a hand edit would touch
+async function setSetting(key, value) {
+  const ta = $('#settings-md');
+  const lines = ta.value.split('\n');
+  const i = lines.findIndex(l => l.trim().startsWith(key + ':'));
+  if (i >= 0) lines[i] = `${key}: ${value}`; else lines.push(`${key}: ${value}`);
+  ta.value = lines.join('\n');
+  return api('/api/settings', { content: ta.value });
+}
+
+let expertLoaded = false;
+async function loadExpert() {
+  const r = await api('/api/expert');
+  expertLoaded = true;
+  $('#expert-files').innerHTML = (r.files || []).map(f =>
+    `<details${f.exists ? ' open' : ''}><summary>${esc(f.path)}${f.note ? ` — <span class="missing">${esc(f.note)}</span>` : ''}${f.exists ? '' : '<span class="missing"> — not created yet</span>'}</summary><pre>${esc(f.exists ? f.content : '(nothing here — this file has not been written)')}</pre></details>`
+  ).join('');
+}
+
+function applyMode(mode) {
+  $('#mode').textContent = mode;
+  $('#expert').style.display = mode === 'expert' ? '' : 'none';
+  if (mode === 'expert' && !expertLoaded) loadExpert();
+}
+
 async function loadSettings() {
   const s = await api('/api/settings');
   $('#settings-path').textContent = s.path;
-  $('#settings-md').value = s.content || '# nest settings\n\ntheme: multi\nfollow_os_theme: true\nrouter: free-first\nauto_api_keys: true\nnotifications: themed\n';
+  $('#settings-md').value = s.content || '# nest settings\n\ntheme: multi\nrouter: free-first\nnotifications: on\nmode: guided\n';
+  document.querySelectorAll('.switch').forEach(sw => {
+    sw.classList.toggle('off', getSetting($('#settings-md').value, sw.dataset.key, sw.dataset.on) !== sw.dataset.on);
+  });
+  applyMode(getSetting($('#settings-md').value, 'mode', 'guided'));
   $('#engines').innerHTML = state.perches.map(p => `
     <div class="engine ${p.installed ? 'installed' : ''}" id="eng-${esc(p.name)}">
       <span class="bird" style="width:34px;height:34px"></span>
@@ -507,7 +551,19 @@ $('#theme').onchange = e => {
 };
 document.body.dataset.theme = localStorage.getItem('nest-theme') || 'multi';
 $('#theme').value = document.body.dataset.theme;
-$('#mode').onclick = e => { e.target.textContent = e.target.textContent === 'guided' ? 'expert' : 'guided'; };
+$('#mode').onclick = () => {
+  const next = $('#mode').textContent === 'guided' ? 'expert' : 'guided';
+  applyMode(next);
+  setSetting('mode', next);
+};
+document.querySelectorAll('.switch').forEach(sw => {
+  sw.onclick = async () => {
+    const next = sw.classList.contains('off') ? sw.dataset.on : sw.dataset.off;
+    sw.classList.toggle('off', next !== sw.dataset.on);
+    const r = await setSetting(sw.dataset.key, next);
+    toast(r.saved ? `${sw.dataset.key}: ${next} — saved` : 'save failed');
+  };
+});
 $('#addbot').onclick = startInterview;
 
 function ivMsg(text, cls) {

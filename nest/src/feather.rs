@@ -64,12 +64,10 @@ explaining what NOT to do. Here is the run:\n\n";
 /// a silent overwrite.
 pub fn feather(dirs: &NestDirs, run_id: &str, name: Option<&str>, force: bool) -> Result<PathBuf> {
     let receipt = find_receipt(dirs, run_id)?;
-    let skill_name = name
-        .map(slug)
-        .unwrap_or_else(|| {
-            let id_prefix: String = receipt.id.chars().take(12).collect();
-            slug(&format!("{}-learned-{id_prefix}", receipt.agent))
-        });
+    let skill_name = name.map(slug).unwrap_or_else(|| {
+        let id_prefix: String = receipt.id.chars().take(12).collect();
+        slug(&format!("{}-learned-{id_prefix}", receipt.agent))
+    });
 
     let prompt = format!(
         "{DISTILL_PROMPT}task: {}\nstatus: {:?}\nsteps: {}\noutput tail:\n{}",
@@ -78,11 +76,25 @@ pub fn feather(dirs: &NestDirs, run_id: &str, name: Option<&str>, force: bool) -
         receipt.steps,
         receipt.tail.join("\n")
     );
+    // Name collisions refuse early — before any provider call.
+    let dir = dirs.home.join("skills").join(&skill_name);
+    let path = dir.join("SKILL.md");
+    if path.exists() && !force {
+        anyhow::bail!("skill '{skill_name}' already exists — pass --force to replace it");
+    }
+
     let res = Router::from_dirs(dirs).complete(&ForageRequest {
         prompt,
         model: None,
         tier: None,
     })?;
+    // The echo fallback reflects the prompt itself — a skill written from it
+    // is garbage, not a summary. Feathers need a real provider.
+    if res.provider == "echo" {
+        anyhow::bail!(
+            "no real provider configured — declare one in providers.toml, then feather again"
+        );
+    }
 
     // strip a wrapping ```markdown fence if the model added one
     let mut body = res.text.trim().to_string();
@@ -105,7 +117,10 @@ pub fn feather(dirs: &NestDirs, run_id: &str, name: Option<&str>, force: bool) -
                 .filter(|l| !l.trim_start().starts_with("name:"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            format!("---\nname: {skill_name}\n{provenance}{yaml}\n---{}", &rest[end + 4..])
+            format!(
+                "---\nname: {skill_name}\n{provenance}{yaml}\n---{}",
+                &rest[end + 4..]
+            )
         } else {
             format!("---\nname: {skill_name}\n{provenance}---\n{body}")
         }
@@ -113,13 +128,7 @@ pub fn feather(dirs: &NestDirs, run_id: &str, name: Option<&str>, force: bool) -
         format!("---\nname: {skill_name}\n{provenance}---\n\n{body}")
     };
 
-    let dir = dirs.home.join("skills").join(&skill_name);
-    let path = dir.join("SKILL.md");
-    if path.exists() && !force {
-        anyhow::bail!("skill '{skill_name}' already exists — pass --force to replace it");
-    }
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("cannot create {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
     // tmp + rename: a feather never half-writes over a live skill
     let tmp = dir.join("SKILL.md.tmp");
     std::fs::write(&tmp, body).with_context(|| format!("cannot write {}", tmp.display()))?;
@@ -149,22 +158,27 @@ mod tests {
     }
 
     #[test]
-    fn feathers_a_run_into_skills() {
+    fn echo_provider_never_writes_a_skill() {
+        // With no real provider declared, feather must refuse rather than
+        // save the distill prompt itself as if it were a learned skill.
         let home = tempfile::tempdir().unwrap();
-        let dirs = crate::home::NestDirs::resolve(std::path::Path::new("/"), Some(home.path().to_path_buf()));
+        let dirs = crate::home::NestDirs::resolve(
+            std::path::Path::new("/"),
+            Some(home.path().to_path_buf()),
+        );
         roost::record(&dirs.roost(), &receipt("run-abc123")).unwrap();
-        let dir = feather(&dirs, "run-abc123", Some("docs-sync"), false).unwrap();
-        let body = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
-        assert!(body.contains("authored-by: doc-keeper"), "{body}");
-        assert!(body.contains("run: run-abc123"), "{body}");
-        // echo router just reflects the distill prompt — file still exists
-        assert!(dir.ends_with("skills/docs-sync"));
+        let err = feather(&dirs, "run-abc123", Some("docs-sync"), false).unwrap_err();
+        assert!(err.to_string().contains("no real provider"), "{err}");
+        assert!(!dirs.home.join("skills/docs-sync/SKILL.md").exists());
     }
 
     #[test]
     fn id_prefix_resolves_and_ambiguity_errors() {
         let home = tempfile::tempdir().unwrap();
-        let dirs = crate::home::NestDirs::resolve(std::path::Path::new("/"), Some(home.path().to_path_buf()));
+        let dirs = crate::home::NestDirs::resolve(
+            std::path::Path::new("/"),
+            Some(home.path().to_path_buf()),
+        );
         roost::record(&dirs.roost(), &receipt("run-aaa")).unwrap();
         roost::record(&dirs.roost(), &receipt("run-aab")).unwrap();
         assert!(find_receipt(&dirs, "run-aaa").is_ok());
@@ -173,14 +187,20 @@ mod tests {
     }
 
     #[test]
-    fn existing_skills_need_force() {
+    fn existing_skills_refuse_without_force() {
+        // The collision check runs before any provider call, so a taken
+        // name errors even when nothing could distill anyway.
         let home = tempfile::tempdir().unwrap();
-        let dirs = crate::home::NestDirs::resolve(std::path::Path::new("/"), Some(home.path().to_path_buf()));
+        let dirs = crate::home::NestDirs::resolve(
+            std::path::Path::new("/"),
+            Some(home.path().to_path_buf()),
+        );
         roost::record(&dirs.roost(), &receipt("run-abc123")).unwrap();
-        feather(&dirs, "run-abc123", Some("docs-sync"), false).unwrap();
-        // second feather with the same name refuses rather than clobbering
-        assert!(feather(&dirs, "run-abc123", Some("docs-sync"), false).is_err());
-        feather(&dirs, "run-abc123", Some("docs-sync"), true).unwrap();
+        let dir = dirs.home.join("skills/docs-sync");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "mine").unwrap();
+        let err = feather(&dirs, "run-abc123", Some("docs-sync"), false).unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
     }
 
     #[test]

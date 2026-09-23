@@ -544,7 +544,6 @@ fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
     let agents = store.agent_files(&package, &materialized.dir)?;
 
     let mut total_tokens = 0u64;
-    let mut all_files: Vec<(String, String)> = Vec::new();
     for (skill, files) in &skills {
         let report = scan::scan(files);
         let tokens = spoke_registry::token_estimate(files);
@@ -556,7 +555,6 @@ fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
         for warning in &report.warnings {
             println!("    scan: {warning}");
         }
-        all_files.extend(files.clone());
     }
     for (agent, files) in &agents {
         let report = scan::scan(files);
@@ -569,9 +567,10 @@ fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
         for warning in &report.warnings {
             println!("    scan: {warning}");
         }
-        all_files.extend(files.clone());
     }
-    let integrity = Store::integrity(&all_files);
+    // Hash the whole materialized package — the same file set `spoke why`
+    // re-hashes from the store cache (declared payloads *and* package.toml).
+    let integrity = Store::integrity(&spoke_registry::collect_files(&materialized.dir)?);
 
     // Overlap check against what is already installed.
     let existing = installed_skill_texts(project)?;
@@ -1409,5 +1408,44 @@ mod tests {
         git_registry(repo.path(), &["demo"]);
         registry_sync(home.path(), Some(repo.path().to_str().unwrap())).unwrap();
         registry_show(home.path()).unwrap();
+    }
+
+    /// The lockfile hash must cover the same files `spoke why` re-hashes
+    /// from the store cache — otherwise every package reports DRIFT.
+    #[test]
+    fn lockfile_integrity_covers_the_whole_cached_package() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".nest")).unwrap(); // nest detected
+        std::fs::write(
+            project.path().join("agent.toml"),
+            "version = 1\nharnesses = [\"nest\"]\n",
+        )
+        .unwrap();
+        // source.path = "." like the real registry packages: package.toml
+        // lands in the cache alongside the payload — the file set that
+        // used to make `spoke why` always report DRIFT.
+        let pkg = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(pkg.path().join("src/s")).unwrap();
+        std::fs::write(
+            pkg.path().join("package.toml"),
+            "name = \"p\"\nversion = \"1.0.0\"\n\n[source]\npath = \".\"\n\n[[skills]]\nname = \"s\"\npath = \"src/s\"\n",
+        )
+        .unwrap();
+        std::fs::write(pkg.path().join("src/s/SKILL.md"), "x").unwrap();
+
+        add(home.path(), project.path(), pkg.path().to_str().unwrap(), false).unwrap();
+
+        let lock = Lock::load(project.path()).unwrap();
+        let locked = lock.get("p").unwrap().integrity.clone().unwrap();
+        let cache = Store::new(home.path())
+            .packages_dir()
+            .join("p")
+            .join("1.0.0");
+        let rehash = Store::integrity(&spoke_registry::collect_files(&cache).unwrap());
+        assert_eq!(locked, rehash, "why() would report a false DRIFT");
+        std::fs::write(cache.join("package.toml"), "tampered").unwrap();
+        let tampered = Store::integrity(&spoke_registry::collect_files(&cache).unwrap());
+        assert_ne!(locked, tampered, "real drift must still be caught");
     }
 }

@@ -18,7 +18,7 @@ Your roster is a living cast of animated birds on a black canvas — each bot ge
 Name your own boss agent (default: **Bigbird**) during onboarding. The Boss watches the roost, routes tasks to the right specialist by pattern, and climbs an escalation ladder when a bot fails — assistant to you, boss to the other assistants. Rename it, reshape it, it's yours.
 
 ### Free-first, always
-NEST ranks your configured providers by cost tier — free first, then cheap, then paid — and respects each one's rate limits automatically (reserved before dispatch, never a surprise bill). When a provider hits its cap, the next tier picks up. You can always override; you can never be ambushed.
+When the nest itself needs a model — `nest ask`, `nest feather` — it ranks your configured providers by cost tier (free first, then cheap, then paid) and respects each one's rate limits: spent providers sit out until their window resets. Bots riding real CLIs (Claude, Codex, …) use that CLI's own login; per-bot routing through the provider layer is on the roadmap.
 
 ### Bots that learn
 When a bot finishes a hard task, `nest feather` distills the run into a reusable skill file — provenance stamped with which bot authored it. Add it to any bot's `skills:` list and its next run starts smarter. The roster literally improves with use.
@@ -27,7 +27,7 @@ When a bot finishes a hard task, `nest feather` distills the run into a reusable
 Remotes (Telegram, Slack, smart watch), provider integrations, council packs, starter bots — every capability arrives as a Spoke package, installed with a single `spoke add`. Add it upstream later; users never manage plumbing.
 
 ### It disappears when you don't need it
-Minimize to the taskbar and NEST keeps working quietly — themed notification bubbles when a bot finishes, or an animated desktop **birdy** that flaps while your bots work and opens the app when you poke it. Follows your OS theme unless you tell it otherwise.
+Minimize to the taskbar and NEST keeps working quietly — desktop notification bubbles when a bot finishes (toggleable in settings), or an animated desktop **birdy** that flaps while your bots work and opens the app when you poke it.
 
 ### Talk to your nest from anywhere
 A tiny daemon watches your remotes' inboxes — message it from Telegram or Slack and the reply lands back where you sent it. The GUI is one window with tabs; the backend settings are a single readable `settings.md` you can hand-edit or let the app manage.

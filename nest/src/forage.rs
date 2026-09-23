@@ -175,7 +175,8 @@ impl HeaderFile {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos();
-            let dir = std::env::temp_dir().join(format!("nest-hdr-{}-{n}-{nanos}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("nest-hdr-{}-{n}-{nanos}", std::process::id()));
             #[cfg(unix)]
             let created = {
                 use std::os::unix::fs::DirBuilderExt;
@@ -338,10 +339,23 @@ impl Router {
         }
     }
 
+    /// Keep the providers.toml declaration order — the `router: declared`
+    /// line in settings.md opts out of the default free-first cost sort.
+    pub fn declared_order(providers: Vec<ProviderSpec>) -> Self {
+        Self {
+            providers,
+            home: None,
+            echo: EchoForage,
+        }
+    }
+
     /// Load the router from the nest's providers.toml files.
     pub fn from_dirs(dirs: &crate::home::NestDirs) -> Self {
         let (providers, _) = crate::spec::load_providers(&dirs.provider_files());
-        let mut r = Self::new(providers);
+        let mut r = match crate::spec::setting(dirs, "router").as_deref() {
+            Some("declared") => Self::declared_order(providers),
+            _ => Self::new(providers),
+        };
         r.home = Some(dirs.home.clone());
         r
     }
@@ -517,5 +531,37 @@ mod tests {
         let router = Router::new(vec![]);
         let res = router.complete(&req(None)).unwrap();
         assert_eq!(res.provider, "echo");
+    }
+
+    #[test]
+    fn declared_order_skips_the_cost_sort() {
+        let router = Router::declared_order(vec![
+            prov("paid-bot", "paid", "cat", &[]),
+            prov("free-cat", "free", "cat", &[]),
+        ]);
+        let order: Vec<String> = router.list().iter().map(|p| p.name.clone()).collect();
+        assert_eq!(order, ["paid-bot", "free-cat"]);
+    }
+
+    #[test]
+    fn router_declared_in_settings_keeps_declaration_order() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".nest")).unwrap();
+        std::fs::write(home.path().join(".nest/settings.md"), "router: declared\n").unwrap();
+        std::fs::write(
+            home.path().join(".nest/providers.toml"),
+            "[[providers]]\nname = \"paid-first\"\nkind = \"command\"\nprogram = \"cat\"\ncost = \"paid\"\n\n[[providers]]\nname = \"free-second\"\nkind = \"command\"\nprogram = \"cat\"\ncost = \"free\"\n",
+        )
+        .unwrap();
+        let dirs = crate::home::NestDirs::resolve(
+            std::path::Path::new("/"),
+            Some(home.path().join(".nest")),
+        );
+        let order: Vec<String> = Router::from_dirs(&dirs)
+            .list()
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        assert_eq!(order, ["paid-first", "free-second"]);
     }
 }

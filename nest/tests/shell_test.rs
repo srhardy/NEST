@@ -196,6 +196,13 @@ fn shell_hatch_records_receipt() {
 fn feather_endpoint_distills_a_run() {
     let t = tempfile::tempdir().unwrap();
     let home = t.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    // a real provider (not the echo stub) — feather refuses without one
+    std::fs::write(
+        home.join("providers.toml"),
+        "[[providers]]\nname = \"fake-llm\"\nkind = \"command\"\nprogram = \"sh\"\nargs = [\"-c\", \"printf -- '---\\nsummary: distilled\\n---\\n\\nlearned steps\\n'\"]\ncost = \"free\"\n",
+    )
+    .unwrap();
     let port = start(&home, t.path());
 
     http(

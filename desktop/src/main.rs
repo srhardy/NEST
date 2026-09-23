@@ -103,9 +103,18 @@ fn get(port: u16, path: &str) -> Option<String> {
     buf.split("\r\n\r\n").nth(1).map(|b| b.to_string())
 }
 
+/// The settings.md `notifications:` line — off/false silences pop-ups.
+fn notifications_on(home: &std::path::Path) -> bool {
+    let text = std::fs::read_to_string(home.join("settings.md")).unwrap_or_default();
+    !text.lines().map(str::trim).any(|l| {
+        l.strip_prefix("notifications:")
+            .is_some_and(|v| matches!(v.trim(), "off" | "false" | "none"))
+    })
+}
+
 /// Watch the roost; every new receipt ID is a desktop notification.
 /// Receipts arrive newest-first, so unseen ones are replayed oldest→newest.
-fn watch_roost(port: u16) {
+fn watch_roost(port: u16, home: std::path::PathBuf) {
     let mut seen: std::collections::HashSet<String> = get(port, "/api/runs")
         .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
         .and_then(|v| v["receipts"].as_array().cloned())
@@ -132,11 +141,13 @@ fn watch_roost(port: u16) {
             }
             let status = r["status"].as_str().unwrap_or("done");
             let task = r["task"].as_str().unwrap_or("a run");
-            Notification::new()
-                .summary("NEST")
-                .body(&format!("{task} — {status}"))
-                .show()
-                .ok();
+            if notifications_on(&home) {
+                Notification::new()
+                    .summary("NEST")
+                    .body(&format!("{task} — {status}"))
+                    .show()
+                    .ok();
+            }
         }
     }
 }
@@ -231,7 +242,7 @@ fn main() -> anyhow::Result<()> {
             .build()?;
 
             toggle_birdy(app.handle(), port);
-            thread::spawn(move || watch_roost(port));
+            thread::spawn(move || watch_roost(port, home.clone()));
             Ok(())
         })
         .on_window_event(|window, event| {
