@@ -768,11 +768,23 @@ fn remotes_watch(shell: Arc<Shell>) {
                 };
                 // where does the reply go? the bridge's frontmatter says
                 // (telegram: chat: <id>, slack: channel: <id>)
-                let reply_to = body
+                let chat_id = body
                     .lines()
                     .find(|l| l.starts_with("chat:") || l.starts_with("channel:"))
                     .and_then(|l| l.split(':').nth(1))
                     .map(|s| s.trim().to_string());
+                let reply_to = match chat_id {
+                    // the id becomes an outbox filename — a malformed one
+                    // (../, absolute paths) gets no reply at all
+                    Some(id) if name_ok(&id) => Some(id),
+                    Some(_) => None,
+                    // generic webhooks carry no chat id — answer under the
+                    // task's own filename so GET /inbox/<remote>/<id>/reply works
+                    None => path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string()),
+                };
                 let remote_name = remote.file_name().to_string_lossy().to_string();
                 let prompt = format!(
                     "A message arrived on the {remote_name} remote. Reply to it \
@@ -879,17 +891,148 @@ pub fn serve_on(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) -
 /// "bots that work while the laptop lid is closed" unit: launchd or
 /// systemd keeps one process alive, routines fire on schedule, remote
 /// bridges get their replies in outbox/.
-pub fn daemon(dirs: NestDirs, cwd: PathBuf) -> Result<()> {
+pub fn daemon(dirs: NestDirs, cwd: PathBuf, webhook: Option<&str>) -> Result<()> {
     let shell = Arc::new(Shell::new(dirs, cwd));
     shell.ensure_eggbot();
     shell.ensure_providers();
     spawn_watchers(&shell);
-    println!(
-        "nest daemon — {} routine(s) armed, watching remotes; ctrl-c to stop",
-        shell.duties.len()
-    );
+    match webhook {
+        Some(addr) => {
+            let listener = std::net::TcpListener::bind(addr)
+                .with_context(|| format!("webhook cannot bind {addr}"))?;
+            let (d2, c2) = (shell.dirs.clone(), shell.cwd.clone());
+            thread::spawn(move || webhook_serve(d2, c2, listener));
+            println!(
+                "nest daemon — {} routine(s) armed, watching remotes; webhook on {addr}; ctrl-c to stop",
+                shell.duties.len()
+            );
+        }
+        None => {
+            println!(
+                "nest daemon — {} routine(s) armed, watching remotes; ctrl-c to stop",
+                shell.duties.len()
+            );
+        }
+    }
     loop {
         thread::park();
+    }
+}
+
+/// The external-trigger bridge — the inbox contract over HTTP instead of a
+/// filesystem drop. `POST /inbox/<remote>` writes the request body to
+/// `~/.nest/remotes/<remote>/inbox/<ms>-<pid>.md`; the existing remotes loop
+/// dispatches it like any bridge drop, so a body starting with `chat: <id>`
+/// gets its reply at `GET /inbox/<remote>/<id>/reply` (outbox/<id>.txt).
+///
+/// Auth: `Authorization: Bearer <token>` against
+/// `~/.nest/remotes/<remote>/token`. A remote without a token file never
+/// accepts inbound traffic — opting a remote in is creating that file.
+/// HTTPS is the tunnel's job (cloudflared/tailscale), not this server's.
+pub fn webhook_serve(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) {
+    // the bridge only touches files — its own Shell shares the same
+    // ~/.nest layout as the daemon's, and remotes_watch does the dispatch
+    let shell = Arc::new(Shell::new(dirs, cwd));
+    let Ok(server) = Server::from_listener(listener, None) else {
+        return;
+    };
+    for request in server.incoming_requests() {
+        let shell = shell.clone();
+        thread::spawn(move || {
+            let mut request = request;
+            let method = request.method().clone();
+            let path = request
+                .url()
+                .split('?')
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let response = webhook_route(&shell, &method, &path, &mut request);
+            let _ = request.respond(response);
+        });
+    }
+}
+
+/// names that can safely appear in a URL segment or become a filename —
+/// anything else (dots, slashes, NUL) would escape the outbox
+fn name_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn webhook_route<'a>(
+    shell: &Arc<Shell>,
+    method: &Method,
+    path: &str,
+    request: &mut tiny_http::Request,
+) -> Response<Box<dyn Read + Send + 'a>> {
+    let err = |status: u16, msg: &str| {
+        respond(
+            json!({"error": msg}).to_string(),
+            "application/json",
+            status,
+        )
+    };
+    let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+    if parts.first() != Some(&"inbox") || parts.len() < 2 || !name_ok(parts[1]) {
+        return err(404, "not found");
+    }
+    let remote = parts[1];
+    let dir = shell.dirs.home.join("remotes").join(remote);
+    let token = std::fs::read_to_string(dir.join("token")).unwrap_or_default();
+    let token = token.trim();
+    let bearer = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Authorization"))
+        .map(|h| h.value.as_str().to_string())
+        .unwrap_or_default();
+    if token.is_empty() || bearer != format!("Bearer {token}") {
+        return err(403, "unauthorized — no token match for this remote");
+    }
+    match (method, parts.as_slice()) {
+        (&Method::Post, [_, _]) => {
+            // bounded read — a token holder still can't fill the disk
+            let mut body = String::new();
+            request
+                .as_reader()
+                .take(64 * 1024 + 1)
+                .read_to_string(&mut body)
+                .ok();
+            if body.len() > 64 * 1024 {
+                return err(413, "body too large (64KiB max)");
+            }
+            if body.trim().is_empty() {
+                return err(400, "empty body");
+            }
+            let inbox = dir.join("inbox");
+            let pending = std::fs::read_dir(&inbox)
+                .map(|es| {
+                    es.flatten()
+                        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+                        .count()
+                })
+                .unwrap_or(0);
+            if pending >= 64 {
+                return err(429, "inbox backlog — try again once tasks drain");
+            }
+            if let Err(e) = std::fs::create_dir_all(&inbox) {
+                return err(500, &format!("cannot create inbox: {e}"));
+            }
+            let id = format!("{}-{}", crate::hatchling::now_ms(), std::process::id());
+            match std::fs::write(inbox.join(format!("{id}.md")), &body) {
+                Ok(()) => json_response(json!({"id": id, "remote": remote})),
+                Err(e) => err(500, &format!("cannot write task: {e}")),
+            }
+        }
+        (&Method::Get, [_, _, id, "reply"]) if name_ok(id) => {
+            match std::fs::read_to_string(dir.join("outbox").join(format!("{id}.txt"))) {
+                Ok(body) => respond(body, "text/plain; charset=utf-8", 200),
+                Err(_) => err(404, "pending"),
+            }
+        }
+        _ => err(404, "not found"),
     }
 }
 
