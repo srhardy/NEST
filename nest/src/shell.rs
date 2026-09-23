@@ -768,18 +768,23 @@ fn remotes_watch(shell: Arc<Shell>) {
                 };
                 // where does the reply go? the bridge's frontmatter says
                 // (telegram: chat: <id>, slack: channel: <id>)
-                let reply_to = body
+                let chat_id = body
                     .lines()
                     .find(|l| l.starts_with("chat:") || l.starts_with("channel:"))
                     .and_then(|l| l.split(':').nth(1))
-                    .map(|s| s.trim().to_string())
+                    .map(|s| s.trim().to_string());
+                let reply_to = match chat_id {
+                    // the id becomes an outbox filename — a malformed one
+                    // (../, absolute paths) gets no reply at all
+                    Some(id) if name_ok(&id) => Some(id),
+                    Some(_) => None,
                     // generic webhooks carry no chat id — answer under the
                     // task's own filename so GET /inbox/<remote>/<id>/reply works
-                    .or_else(|| {
-                        path.file_stem()
-                            .and_then(|s| s.to_str())
-                            .map(|s| s.to_string())
-                    });
+                    None => path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string()),
+                };
                 let remote_name = remote.file_name().to_string_lossy().to_string();
                 let prompt = format!(
                     "A message arrived on the {remote_name} remote. Reply to it \
@@ -948,6 +953,14 @@ pub fn webhook_serve(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListen
     }
 }
 
+/// names that can safely appear in a URL segment or become a filename —
+/// anything else (dots, slashes, NUL) would escape the outbox
+fn name_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 fn webhook_route<'a>(
     shell: &Arc<Shell>,
     method: &Method,
@@ -960,11 +973,6 @@ fn webhook_route<'a>(
             "application/json",
             status,
         )
-    };
-    let name_ok = |s: &str| {
-        !s.is_empty()
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     };
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     if parts.first() != Some(&"inbox") || parts.len() < 2 || !name_ok(parts[1]) {

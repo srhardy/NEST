@@ -23,10 +23,19 @@ description: How to run and end-to-end test the NEST engine + web shell and the 
 - `skills/<name>/SKILL.md` — feather output; frontmatter `name:`, `authored-by:`, `run:`.
 - No credentials needed anywhere: with no `providers.toml`, the forage router falls back to the echo provider (distill output = the prompt reflected back).
 
-## spoke CLI gotchas
-- `spoke add <spec>` requires `agent.toml` in the project dir — `spoke init` in a scratch dir first.
-- Installs only into harnesses whose `root(home)` dir exists: Nest→`~/.nest`, Claude Code→`~/.claude`, Codex→`~/.codex`. `mkdir ~/.claude` to make the Claude Code target visible and prove cross-harness installs land in `~/.claude/skills/<name>/`.
-- `spoke add <bare-name>` resolves `~/.nest/skills/<name>` (bot-authored wrap); `spoke add <dir-with-SKILL.md>` also wraps; anything else falls through to the registry index at `~/.spoke/registry/index.toml` (missing index = clean error). Lockfile: `<project>/agent.lock`.
+## Webhook daemon (`nest daemon --webhook <addr>`)
+- One process runs BOTH the remotes watcher (~3s tick) and the HTTP listener; start it from a writable cwd (e.g. `/tmp/nest-cwd`) with `nohup` and check the log for `webhook on <addr>`.
+- Remote fixture: `~/.nest/remotes/<name>/token` (raw token string) + `inbox/` dir. Every matched path needs `Authorization: Bearer <token>` — missing/wrong token or ghost remote → 403.
+- POST `chat: <id>` or `channel: <id>` as the FIRST line of the body → reply lands at `outbox/<id>.txt` and `GET /inbox/<remote>/<id>/reply` serves it (404 pending → 200). No such line → reply keyed under the returned `{"id"}` (task file stem).
+- IMPORTANT for curl fixtures: `-d 'chat: 42\n…'` sends a LITERAL `\n` — the whole body is one line and `reply_to` swallows everything after `chat: ` into the filename. Use bash ANSI quoting `-d $'chat: 42\n…'` for a real newline.
+- Caps (verified at de23545): body >64KiB → 413; ≥64 pending `inbox/*.md` → 429. Seed the inbox with ~80 dummy `.md` files and POST immediately — the watcher drains every ~3s so a marginal count can race below the cap.
+- Security probe done: `chat:`/`channel:` values are NOT name_ok'd like URL segments — `../` values escape `outbox/` when the task is dispatched (reported to lead as a finding; verify it's fixed before relying on it staying safe).
+
+## spoke registry (`spoke registry sync/show`)
+- `~/.spoke/registry` must NOT pre-exist as a non-git dir for the clone test — `rm -rf` it first (but check it's not a real checkout you want to keep).
+- Local fixture registry: git repo containing `index.toml` (`[[package]] name = "x" manifest = "pkg/x/package.toml"`) + package dirs with `package.toml` (`[source] git = "<repo>" rev = "<sha>"` or `path = "."`; `[[skills]] name path`).
+- sha-pin check: use a 2-commit package repo, pin `rev` to the FIRST commit sha, and grep the installed SKILL.md for a marker that only exists in v1 — proves full-clone+checkout (a broken pin installs v2/HEAD).
+- Bare `sync` (existing checkout) does `git pull --ff-only` and ignores any url arg; commit a new package into the fixture registry to prove the pull path end-to-end.
 
 ## Devin Secrets Needed
 None — echo perch + echo forage provider cover everything; real LLM CLIs are optional.

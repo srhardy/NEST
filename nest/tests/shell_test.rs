@@ -405,6 +405,56 @@ fn webhook_generic_task_replies_under_task_id() {
 }
 
 #[test]
+fn webhook_traversal_chat_id_writes_no_outbox() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let _shell_port = start(&home, t.path()); // watchers own dispatch + outbox
+    let remote = home.join("remotes/hook");
+    std::fs::create_dir_all(&remote).unwrap();
+    std::fs::write(remote.join("token"), "s3cret\n").unwrap();
+
+    let port = free_port();
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let dirs = NestDirs::resolve(t.path(), Some(home.clone()));
+    thread::spawn(move || nest::shell::webhook_serve(dirs, t.path().to_path_buf(), listener));
+    for _ in 0..50 {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // a chat id that tries to climb out of the outbox gets no reply file
+    let raw = http_headers(
+        port,
+        "POST",
+        "/inbox/hook",
+        Some("chat: ../../../evil\nescape attempt"),
+        &[("Authorization", "Bearer s3cret")],
+    );
+    let v: serde_json::Value = serde_json::from_str(&body(&raw)).unwrap_or_default();
+    let id = v["id"].as_str().expect("no task id").to_string();
+
+    // wait for the watcher to consume the task
+    let done_file = remote.join("inbox/done").join(format!("{id}.md"));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !done_file.exists() {
+        assert!(Instant::now() < deadline, "task never dispatched");
+        thread::sleep(Duration::from_millis(300));
+    }
+    // give the reply writer a beat, then prove nothing escaped (or landed)
+    thread::sleep(Duration::from_millis(500));
+    assert!(!home.join("evil.txt").exists(), "traversal write landed");
+    let outbox: Vec<_> = std::fs::read_dir(remote.join("outbox"))
+        .map(|es| es.flatten().collect())
+        .unwrap_or_default();
+    assert!(
+        outbox.is_empty(),
+        "reply written for bad chat id: {outbox:?}"
+    );
+}
+
+#[test]
 fn cross_origin_writes_are_blocked() {
     let t = tempfile::tempdir().unwrap();
     let port = start(&t.path().join("home"), t.path());
