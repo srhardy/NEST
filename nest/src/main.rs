@@ -76,8 +76,9 @@ enum Cmd {
         /// Also serve the remotes webhook on <addr> (e.g. 0.0.0.0:8080 behind
         /// a tunnel): `POST /inbox/<remote>` with `Authorization: Bearer <t>`
         /// (token = ~/.nest/remotes/<remote>/token) drops a task file into the
-        /// remote's inbox; when the body starts with `chat: <id>` the reply
-        /// lands at `GET /inbox/<remote>/<id>/reply`.
+        /// remote's inbox; the reply lands at `GET /inbox/<remote>/<id>/reply`
+        /// where <id> is the body's `chat:`/`channel:` key or the returned task id.
+        /// Bodies cap at 64KiB and a remote's inbox backlog at 64 tasks.
         #[arg(long)]
         webhook: Option<String>,
     },

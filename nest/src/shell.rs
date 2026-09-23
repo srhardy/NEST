@@ -772,7 +772,14 @@ fn remotes_watch(shell: Arc<Shell>) {
                     .lines()
                     .find(|l| l.starts_with("chat:") || l.starts_with("channel:"))
                     .and_then(|l| l.split(':').nth(1))
-                    .map(|s| s.trim().to_string());
+                    .map(|s| s.trim().to_string())
+                    // generic webhooks carry no chat id — answer under the
+                    // task's own filename so GET /inbox/<remote>/<id>/reply works
+                    .or_else(|| {
+                        path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_string())
+                    });
                 let remote_name = remote.file_name().to_string_lossy().to_string();
                 let prompt = format!(
                     "A message arrived on the {remote_name} remote. Reply to it \
@@ -978,11 +985,30 @@ fn webhook_route<'a>(
     }
     match (method, parts.as_slice()) {
         (&Method::Post, [_, _]) => {
-            let body = read_body(request);
+            // bounded read — a token holder still can't fill the disk
+            let mut body = String::new();
+            request
+                .as_reader()
+                .take(64 * 1024 + 1)
+                .read_to_string(&mut body)
+                .ok();
+            if body.len() > 64 * 1024 {
+                return err(413, "body too large (64KiB max)");
+            }
             if body.trim().is_empty() {
                 return err(400, "empty body");
             }
             let inbox = dir.join("inbox");
+            let pending = std::fs::read_dir(&inbox)
+                .map(|es| {
+                    es.flatten()
+                        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+                        .count()
+                })
+                .unwrap_or(0);
+            if pending >= 64 {
+                return err(429, "inbox backlog — try again once tasks drain");
+            }
             if let Err(e) = std::fs::create_dir_all(&inbox) {
                 return err(500, &format!("cannot create inbox: {e}"));
             }

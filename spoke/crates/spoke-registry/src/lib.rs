@@ -105,21 +105,51 @@ impl Store {
                 })
             }
             (None, Some(git)) => {
-                let mut command = Command::new("git");
-                command.args(["clone", "--depth", "1", "--quiet"]);
-                if let Some(rev) = &manifest.source.rev {
-                    command.args(["--branch", rev]);
-                }
-                command.arg(git).arg(&dest);
-                let output = command
-                    .output()
-                    .with_context(|| format!("running git clone for {}", git))?;
+                // a hex rev is a commit sha — `git clone --branch` only
+                // resolves branches/tags, so pin via a full clone + checkout
+                let rev = manifest.source.rev.as_deref().unwrap_or_default();
+                let sha_pin =
+                    !rev.is_empty() && rev.len() >= 7 && rev.chars().all(|c| c.is_ascii_hexdigit());
+                let output = if sha_pin {
+                    Command::new("git")
+                        .args(["clone", "--quiet"])
+                        .arg(git)
+                        .arg(&dest)
+                        .output()
+                        .with_context(|| format!("running git clone for {git}"))?
+                } else {
+                    let mut command = Command::new("git");
+                    command.args(["clone", "--depth", "1", "--quiet"]);
+                    if !rev.is_empty() {
+                        command.args(["--branch", rev]);
+                    }
+                    command.arg(git).arg(&dest);
+                    command
+                        .output()
+                        .with_context(|| format!("running git clone for {git}"))?
+                };
                 if !output.status.success() {
                     bail!(
                         "git clone failed for {}: {}",
                         git,
                         String::from_utf8_lossy(&output.stderr).trim()
                     );
+                }
+                if sha_pin {
+                    let output = Command::new("git")
+                        .arg("-C")
+                        .arg(&dest)
+                        .args(["checkout", "--quiet", rev])
+                        .output()
+                        .with_context(|| format!("checking out {rev}"))?;
+                    if !output.status.success() {
+                        bail!(
+                            "cannot pin {} to {}: {}",
+                            git,
+                            rev,
+                            String::from_utf8_lossy(&output.stderr).trim()
+                        );
+                    }
                 }
                 Ok(Materialized {
                     dir: dest,
@@ -328,6 +358,106 @@ path = "."
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].0, "demo-skill");
         assert!(skills[0].1.iter().any(|(rel, _)| rel == "SKILL.md"));
+    }
+
+    /// A real git repo holding a package, with two commits — pinning a sha
+    /// must land the older revision's content.
+    fn git_package_repo(dir: &Path) -> String {
+        fixture_package(dir);
+        let commit = |msg: &str| {
+            let run = |args: &[&str]| {
+                let status = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir)
+                    .args(args)
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "git {args:?} failed");
+            };
+            run(&["add", "-A"]);
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+                .args(["commit", "-qm", msg])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        commit("v1");
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        let v1 = String::from_utf8(out.stdout).unwrap().trim().to_string();
+        write(
+            &dir.join("src/SKILL.md"),
+            "---\nname: demo-skill\ndescription: v2\n---\n\nv2 body.\n",
+        );
+        commit("v2");
+        v1
+    }
+
+    #[test]
+    fn fetches_a_git_package_pinned_to_a_sha() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let sha = git_package_repo(repo.path());
+        let store = Store::new(home.path());
+        let manifest: PackageManifest = toml::from_str(&format!(
+            "name = \"demo-skill\"\nversion = \"0.1.0\"\n\n\
+             [source]\ngit = \"{}\"\nrev = \"{}\"\n\n\
+             [[skills]]\nname = \"demo-skill\"\npath = \".\"\n",
+            repo.path().display(),
+            sha
+        ))
+        .unwrap();
+        let materialized = store.fetch(&manifest).unwrap();
+        let body = std::fs::read_to_string(materialized.dir.join("src/SKILL.md")).unwrap();
+        assert!(
+            body.contains("demo"),
+            "pinned checkout lost content: {body}"
+        );
+        assert!(!body.contains("v2"), "pin did not land the old sha: {body}");
+    }
+
+    #[test]
+    fn fetches_a_git_package_pinned_to_a_branch() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        git_package_repo(repo.path());
+        let store = Store::new(home.path());
+        let branch = String::from_utf8(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let manifest: PackageManifest = toml::from_str(&format!(
+            "name = \"demo-skill\"\nversion = \"0.1.0\"\n\n\
+             [source]\ngit = \"{}\"\nrev = \"{}\"\n\n\
+             [[skills]]\nname = \"demo-skill\"\npath = \".\"\n",
+            repo.path().display(),
+            branch
+        ))
+        .unwrap();
+        let materialized = store.fetch(&manifest).unwrap();
+        let body = std::fs::read_to_string(materialized.dir.join("src/SKILL.md")).unwrap();
+        assert!(body.contains("v2"), "branch pin missed latest: {body}");
     }
 
     #[test]

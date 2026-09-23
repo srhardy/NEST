@@ -27,8 +27,8 @@ pub fn scan(files: &[(String, String)]) -> ScanReport {
 
     for (rel, contents) in files {
         let lower = rel.to_ascii_lowercase();
-        let is_script = SCRIPT_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
-            || contents.starts_with("#!");
+        let is_script =
+            SCRIPT_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) || contents.starts_with("#!");
         if is_script {
             report.scripts.push(rel.clone());
         }
@@ -59,7 +59,8 @@ pub fn scan(files: &[(String, String)]) -> ScanReport {
         ));
     }
     if report.declares_hooks {
-        report.warnings
+        report
+            .warnings
             .push("declares hooks in SKILL.md frontmatter — hooks run shell commands".to_string());
     }
 

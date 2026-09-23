@@ -46,6 +46,12 @@ or sha in the manifest; `spoke why <name>` already surfaces the resolved
 source. Publishing is a PR on the registry repo — review is the approval
 workflow, free.
 
+Index semantics: one entry per name — `[[package]]` maps a name to exactly
+one manifest and `version` in the index is advisory only; the version that
+actually installs comes from the manifest (and lands in `agent.lock`).
+Multiple versions of the same name need distinct entries
+(`foo-1x`, `foo-2x`) or a later index schema change — deferred.
+
 Why this beats a hosted API for v0: zero infra to run, versioned by git,
 works with private repos via the user's existing git credentials, and the
 `Index`/`Store` code path doesn't change — only a sync wrapper does. If a
@@ -56,13 +62,20 @@ sits behind it unchanged.
 
 The daemon already owns the dispatch loop; the bridge is the only missing
 piece. `packages/remotes/skills/*-remote` establishes the pattern: a bridge
-is a small process that translates one provider into inbox files. For
+is a small process that translates one provider into inbox files. Guards on
+the listener: bodies cap at 64KiB, a remote's backlog at 64 pending tasks
+(both refused with 413/429 rather than filling disk or flooding dispatch).
+A captured bearer token stays replayable by design of v0 — mitigate by
+rotating `token` files; request-signing (HMAC over body+timestamp) is the
+listed hardening if real adversaries show up. For
 inbound-over-internet:
 
 ```
 POST /inbox/<remote>   (Authorization: Bearer <token>)
   → writes ~/.nest/remotes/<remote>/inbox/<ts>.md
-  → existing remotes_watch dispatches → outbox/<ts>.md
+  → existing remotes_watch dispatches → outbox/<chat>.txt
+     (no chat:/channel: line → replies under the task's own filename,
+      outbox/<ts>.txt, retrievable at GET /inbox/<remote>/<ts>/reply)
 ```
 
 Where it runs: beside `nest daemon` on a VPS, or on a laptop behind
@@ -77,8 +90,11 @@ cloud tier shares *packages and triggers*, not runtime.
 
 ## Sequencing
 
-1. `spoke registry sync/show` + a seeded `nest-registry` repo (move
-   `packages/starter-bots`, `packages/remotes` manifests into it) — ~1 session, no infra.
+1. `spoke registry sync/show` + a seeded `nest-registry` repo — seeding
+   means vendoring each package's *contents* under `pkg/<name>/` (manifest
+   `source.path = "."` resolves relative to the manifest's own directory,
+   so copying the manifest alone would point the source at nothing), or
+   giving each package its own `source.git` repo. ~1 session, no infra.
 2. Webhook-inbox bridge + `token` file convention + a `cloudflared` recipe
    in docs — ~1 session.
 3. Only if adoption demands: a real index service mirroring `index.toml`

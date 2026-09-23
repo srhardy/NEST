@@ -295,6 +295,16 @@ fn webhook_inbox_drop_auth_and_reply() {
     );
     assert!(!escape.contains("\"id\""), "{escape}");
 
+    // oversized bodies are refused before hitting disk
+    let fat = http_headers(
+        port,
+        "POST",
+        "/inbox/hook",
+        Some(&"x".repeat(70 * 1024)),
+        &[("Authorization", "Bearer s3cret")],
+    );
+    assert!(fat.contains("413"), "{fat}");
+
     // good token → task file lands in the remote's inbox
     let ok = http_headers(
         port,
@@ -333,6 +343,65 @@ fn webhook_inbox_drop_auth_and_reply() {
         &[("Authorization", "Bearer s3cret")],
     );
     assert!(body(&reply).contains("the nest says hi"), "{reply}");
+
+    // a full backlog refuses new drops
+    for i in 0..64 {
+        std::fs::write(inbox.join(format!("seed-{i}.md")), "x").unwrap();
+    }
+    let flooded = http_headers(
+        port,
+        "POST",
+        "/inbox/hook",
+        Some("chat: 9\nmore"),
+        &[("Authorization", "Bearer s3cret")],
+    );
+    assert!(flooded.contains("429"), "{flooded}");
+}
+
+#[test]
+fn webhook_generic_task_replies_under_task_id() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let _shell_port = start(&home, t.path()); // watchers own dispatch + outbox
+    let remote = home.join("remotes/hook");
+    std::fs::create_dir_all(&remote).unwrap();
+    std::fs::write(remote.join("token"), "s3cret\n").unwrap();
+
+    let port = free_port();
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let dirs = NestDirs::resolve(t.path(), Some(home.clone()));
+    thread::spawn(move || nest::shell::webhook_serve(dirs, t.path().to_path_buf(), listener));
+    for _ in 0..50 {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // no chat:/channel: line — the reply still lands, keyed on the task id
+    let raw = http_headers(
+        port,
+        "POST",
+        "/inbox/hook",
+        Some("generic ping for nobody"),
+        &[("Authorization", "Bearer s3cret")],
+    );
+    let v: serde_json::Value = serde_json::from_str(&body(&raw)).unwrap_or_default();
+    let id = v["id"].as_str().expect("no task id").to_string();
+
+    let reply_file = remote.join("outbox").join(format!("{id}.txt"));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !reply_file.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "no reply at {}",
+            reply_file.display()
+        );
+        thread::sleep(Duration::from_millis(300));
+    }
+    assert!(std::fs::read_to_string(&reply_file)
+        .unwrap()
+        .contains("generic ping"));
 }
 
 #[test]
