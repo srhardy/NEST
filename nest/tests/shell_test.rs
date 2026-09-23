@@ -239,6 +239,103 @@ fn feather_endpoint_distills_a_run() {
 }
 
 #[test]
+fn webhook_inbox_drop_auth_and_reply() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    std::fs::create_dir_all(home.join("agents")).unwrap();
+    std::fs::write(
+        home.join("agents/bigbird.md"),
+        "---\nname: bigbird\njob: the boss\nboss: true\n---\nYou answer things.\n",
+    )
+    .unwrap();
+    // a remote opts in by owning a token file
+    let remote = home.join("remotes/hook");
+    std::fs::create_dir_all(&remote).unwrap();
+    std::fs::write(remote.join("token"), "s3cret\n").unwrap();
+
+    let port = free_port();
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let dirs = NestDirs::resolve(t.path(), Some(home.clone()));
+    thread::spawn(move || nest::shell::webhook_serve(dirs, t.path().to_path_buf(), listener));
+    for _ in 0..50 {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // no token → 403
+    let denied = http(port, "POST", "/inbox/hook", Some("chat: 42\nhello"));
+    assert!(denied.contains("403"), "{denied}");
+    // wrong token → 403
+    let wrong = http_headers(
+        port,
+        "POST",
+        "/inbox/hook",
+        Some("chat: 42\nhello"),
+        &[("Authorization", "Bearer nope")],
+    );
+    assert!(wrong.contains("403"), "{wrong}");
+    // a remote with no token file never accepts inbound
+    let ghost = http_headers(
+        port,
+        "POST",
+        "/inbox/ghost",
+        Some("chat: 1\nhi"),
+        &[("Authorization", "Bearer s3cret")],
+    );
+    assert!(ghost.contains("403"), "{ghost}");
+    // traversal in remote/id segments can't escape the remotes dir
+    let escape = http_headers(
+        port,
+        "POST",
+        "/inbox/..%2Fevil",
+        Some("x"),
+        &[("Authorization", "Bearer s3cret")],
+    );
+    assert!(!escape.contains("\"id\""), "{escape}");
+
+    // good token → task file lands in the remote's inbox
+    let ok = http_headers(
+        port,
+        "POST",
+        "/inbox/hook",
+        Some("chat: 42\nwhat's up"),
+        &[("Authorization", "Bearer s3cret")],
+    );
+    assert!(ok.contains("\"remote\":\"hook\""), "{ok}");
+    let inbox = remote.join("inbox");
+    let drop = std::fs::read_dir(&inbox)
+        .unwrap()
+        .flatten()
+        .next()
+        .expect("no inbox file");
+    assert!(std::fs::read_to_string(drop.path())
+        .unwrap()
+        .contains("what's up"));
+
+    // replies are the existing outbox contract: outbox/<chat>.txt
+    let pending = http_headers(
+        port,
+        "GET",
+        "/inbox/hook/42/reply",
+        None,
+        &[("Authorization", "Bearer s3cret")],
+    );
+    assert!(pending.contains("404"), "{pending}");
+    std::fs::create_dir_all(remote.join("outbox")).unwrap();
+    std::fs::write(remote.join("outbox/42.txt"), "the nest says hi").unwrap();
+    let reply = http_headers(
+        port,
+        "GET",
+        "/inbox/hook/42/reply",
+        None,
+        &[("Authorization", "Bearer s3cret")],
+    );
+    assert!(body(&reply).contains("the nest says hi"), "{reply}");
+}
+
+#[test]
 fn cross_origin_writes_are_blocked() {
     let t = tempfile::tempdir().unwrap();
     let port = start(&t.path().join("home"), t.path());

@@ -72,7 +72,15 @@ enum Cmd {
         port: u16,
     },
     /// Headless runtime — patrol + remotes with no UI. For launchd/systemd.
-    Daemon,
+    Daemon {
+        /// Also serve the remotes webhook on <addr> (e.g. 0.0.0.0:8080 behind
+        /// a tunnel): `POST /inbox/<remote>` with `Authorization: Bearer <t>`
+        /// (token = ~/.nest/remotes/<remote>/token) drops a task file into the
+        /// remote's inbox; when the body starts with `chat: <id>` the reply
+        /// lands at `GET /inbox/<remote>/<id>/reply`.
+        #[arg(long)]
+        webhook: Option<String>,
+    },
     /// Distill a finished run into a reusable skill (~/.nest/skills/<name>/SKILL.md).
     Feather {
         /// Run id (or unique prefix) from `nest roost`.
@@ -308,9 +316,9 @@ fn main() -> Result<()> {
             let dir = nest::feather::feather(&dirs, run_id, name.as_deref(), *force)?;
             println!("feathered {}", dir.display());
         }
-        Cmd::Daemon => {
+        Cmd::Daemon { webhook } => {
             let (dirs, cwd) = resolve(&cli)?;
-            nest::shell::daemon(dirs, cwd)?;
+            nest::shell::daemon(dirs, cwd, webhook.as_deref())?;
         }
     }
     Ok(())

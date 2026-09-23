@@ -84,6 +84,20 @@ enum Command {
         #[command(subcommand)]
         command: BotCommand,
     },
+    /// Manage the shared package registry (~/.spoke/registry)
+    Registry {
+        #[command(subcommand)]
+        command: RegistryCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegistryCommand {
+    /// Clone or update the registry index repo (git URL; omit to pull the
+    /// checkout already at ~/.spoke/registry)
+    Sync { url: Option<String> },
+    /// List the packages in the synced index
+    Show,
 }
 
 #[derive(Subcommand)]
@@ -143,6 +157,10 @@ fn run(cli: Cli) -> Result<()> {
             BotCommand::Add { name, job, title } => {
                 bot_add(&project, &name, &job, title.as_deref())
             }
+        },
+        Command::Registry { command } => match command {
+            RegistryCommand::Sync { url } => registry_sync(&home, url.as_deref()),
+            RegistryCommand::Show => registry_show(&home),
         },
     }
 }
@@ -849,6 +867,70 @@ fn installed_skill_texts(project: &Path) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
+/// `spoke registry sync` — the registry index is a git repo. First run
+/// clones it into `~/.spoke/registry/`; later runs pull the same checkout.
+/// After sync, `spoke add <name>` resolves through the index and `fetch`
+/// clones each package's own `source.git`.
+fn registry_sync(home: &Path, url: Option<&str>) -> Result<()> {
+    let store = Store::new(home);
+    let dir = store.registry_dir();
+    if dir.join(".git").is_dir() {
+        if url.is_some() {
+            println!("registry already checked out — ignoring url, pulling");
+        }
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["pull", "--ff-only", "--quiet"])
+            .status()
+            .context("running git pull")?;
+        anyhow::ensure!(
+            status.success(),
+            "git pull --ff-only failed in {} — resolve it manually",
+            dir.display()
+        );
+        println!("pulled {}", dir.display());
+    } else {
+        let url = url.ok_or_else(|| {
+            anyhow!(
+                "no registry at {} — pass a git url: `spoke registry sync <git-url>`",
+                dir.display()
+            )
+        })?;
+        if dir.exists() && dir.read_dir()?.next().is_some() {
+            anyhow::bail!(
+                "{} exists but isn't a git checkout — move it aside first",
+                dir.display()
+            );
+        }
+        let status = std::process::Command::new("git")
+            .args(["clone", "--quiet"])
+            .arg(url)
+            .arg(&dir)
+            .status()
+            .context("running git clone")?;
+        anyhow::ensure!(status.success(), "git clone of '{url}' failed");
+        println!("cloned {url} -> {}", dir.display());
+    }
+    let index = spoke_registry::package::Index::load(&store.index_path())
+        .context("registry synced but has no readable index.toml")?;
+    println!("{} package(s) in the index", index.packages.len());
+    Ok(())
+}
+
+fn registry_show(home: &Path) -> Result<()> {
+    let store = Store::new(home);
+    let index = spoke_registry::package::Index::load(&store.index_path())
+        .context("no registry synced — run `spoke registry sync <git-url>` first")?;
+    if index.packages.is_empty() {
+        println!("index is empty");
+    }
+    for entry in &index.packages {
+        println!("  {:<24} {}", entry.name, entry.manifest);
+    }
+    Ok(())
+}
+
 fn bot_list(project: &Path) -> Result<()> {
     let manifest = Manifest::load(project)?;
     if manifest.bots.is_empty() {
@@ -1200,5 +1282,132 @@ mod tests {
         std::fs::write(sneaky.join("SKILL.md"), "x").unwrap();
         let path = materialize_spec(home.path(), "../secret").unwrap();
         assert_eq!(path, PathBuf::from("../secret"));
+    }
+
+    /// A registry repo: index.toml + one manifest per package, committed.
+    fn git_registry(dir: &Path, names: &[&str]) {
+        std::fs::create_dir_all(dir).unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(dir)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let mut index = String::new();
+        for name in names {
+            index += &format!(
+                "[[package]]\nname = \"{name}\"\nmanifest = \"pkg/{name}/package.toml\"\n\n"
+            );
+            let pkg = dir.join("pkg").join(name);
+            std::fs::create_dir_all(pkg.join("src")).unwrap();
+            std::fs::write(
+                pkg.join("package.toml"),
+                format!("name = \"{name}\"\nversion = \"0.1.0\"\n\n[source]\npath = \"src\"\n"),
+            )
+            .unwrap();
+            std::fs::write(pkg.join("src/demo.txt"), "x").unwrap();
+        }
+        std::fs::write(dir.join("index.toml"), index).unwrap();
+        git(&["add", "-A"]);
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+            .args(["commit", "-qm", "x"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    fn commit_into(dir: &Path) {
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        run(&["add", "-A"]);
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+            .args(["commit", "-qm", "x"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn registry_sync_clones_and_resolves() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        git_registry(repo.path(), &["demo"]);
+        registry_sync(home.path(), Some(repo.path().to_str().unwrap())).unwrap();
+        let manifest = Store::new(home.path()).resolve("demo").unwrap();
+        assert_eq!(manifest.name, "demo");
+    }
+
+    #[test]
+    fn registry_sync_pulls_new_packages() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        git_registry(repo.path(), &["one"]);
+        registry_sync(home.path(), Some(repo.path().to_str().unwrap())).unwrap();
+
+        let pkg = repo.path().join("pkg/two");
+        std::fs::create_dir_all(pkg.join("src")).unwrap();
+        std::fs::write(
+            pkg.join("package.toml"),
+            "name = \"two\"\nversion = \"0.1.0\"\n\n[source]\npath = \"src\"\n",
+        )
+        .unwrap();
+        std::fs::write(pkg.join("src/demo.txt"), "x").unwrap();
+        let mut index = std::fs::read_to_string(repo.path().join("index.toml")).unwrap();
+        index += "[[package]]\nname = \"two\"\nmanifest = \"pkg/two/package.toml\"\n";
+        std::fs::write(repo.path().join("index.toml"), index).unwrap();
+        commit_into(repo.path());
+
+        registry_sync(home.path(), None).unwrap();
+        assert!(Store::new(home.path()).resolve("two").is_ok());
+    }
+
+    #[test]
+    fn registry_sync_without_url_needs_a_checkout() {
+        let home = tempfile::tempdir().unwrap();
+        let err = registry_sync(home.path(), None).unwrap_err().to_string();
+        assert!(err.contains("pass a git url"), "{err}");
+    }
+
+    #[test]
+    fn registry_sync_rejects_a_non_git_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".spoke/registry");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.toml"), "").unwrap();
+        let err = registry_sync(home.path(), Some("x"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("isn't a git checkout"), "{err}");
+    }
+
+    #[test]
+    fn registry_show_reads_the_index() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        git_registry(repo.path(), &["demo"]);
+        registry_sync(home.path(), Some(repo.path().to_str().unwrap())).unwrap();
+        registry_show(home.path()).unwrap();
     }
 }
