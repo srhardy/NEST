@@ -138,8 +138,13 @@ impl Brood {
             let status = receipt.status;
             attempts.push((target.via.clone(), receipt));
             if status == Status::Done {
-                let winner = attempts.pop().map(|(_, r)| r);
-                return Ok(Dispatch { winner, attempts });
+                let mut winner = attempts.pop().map(|(_, r)| r).unwrap();
+                // attempts left over are the failures the ladder climbed past
+                winner.hard_won = !attempts.is_empty();
+                return Ok(Dispatch {
+                    winner: Some(winner),
+                    attempts,
+                });
             }
         }
         Ok(Dispatch {
@@ -231,5 +236,63 @@ mod tests {
     fn no_routes_no_boss_lists_all() {
         let brood = Brood::new(vec![agent("a", false), agent("b", false)], vec![]);
         assert_eq!(brood.plan("x").len(), 2);
+    }
+
+    /// Test perch: agents named "fails" exit 1, everyone else echoes.
+    struct ScriptedPerch;
+    impl Perch for ScriptedPerch {
+        fn name(&self) -> &'static str {
+            "scripted"
+        }
+        fn binary(&self) -> &'static str {
+            ""
+        }
+        fn launch(
+            &self,
+            agent: &AgentSpec,
+            _task: &str,
+            _dirs: &crate::home::NestDirs,
+        ) -> crate::perch::Launch {
+            crate::perch::Launch {
+                program: "sh".into(),
+                args: if agent.name == "fails" {
+                    vec!["-c".into(), "exit 1".into()]
+                } else {
+                    vec!["-c".into(), "echo ok".into()]
+                },
+                env: Default::default(),
+            }
+        }
+        fn parse(&self, line: &str) -> Option<Peep> {
+            Some(Peep::Output { text: line.into() })
+        }
+    }
+
+    #[test]
+    fn winner_after_failures_is_hard_won() {
+        let brood = Brood::new(
+            vec![agent("fails", false), agent("works", false)],
+            vec![route(&["task"], "fails", &["works"])],
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::home::NestDirs::resolve(tmp.path(), Some(tmp.path().join("h")));
+        let dispatch = brood
+            .dispatch("task", &ScriptedPerch, tmp.path(), &dirs, |_, _| {})
+            .unwrap();
+        let winner = dispatch.winner.as_ref().unwrap();
+        assert_eq!(winner.agent, "works");
+        assert!(winner.hard_won);
+        assert_eq!(dispatch.attempts.len(), 1);
+    }
+
+    #[test]
+    fn first_callee_winner_is_not_hard_won() {
+        let brood = Brood::new(vec![agent("works", false)], vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::home::NestDirs::resolve(tmp.path(), Some(tmp.path().join("h")));
+        let dispatch = brood
+            .dispatch("task", &ScriptedPerch, tmp.path(), &dirs, |_, _| {})
+            .unwrap();
+        assert!(!dispatch.winner.as_ref().unwrap().hard_won);
     }
 }

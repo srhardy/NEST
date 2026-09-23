@@ -170,7 +170,7 @@
     <div class="pane" id="pane-activity">
       <div class="scroll">
         <h3 style="margin-bottom:12px">the roost — every run leaves a receipt</h3>
-        <table class="runs"><thead><tr><th>run</th><th>bot</th><th>status</th><th>steps</th><th>secs</th></tr></thead><tbody id="runs"></tbody></table>
+        <table class="runs"><thead><tr><th>run</th><th>bot</th><th>status</th><th>steps</th><th>secs</th><th></th></tr></thead><tbody id="runs"></tbody></table>
       </div>
     </div>
     <div class="pane" id="pane-interview">
@@ -387,7 +387,11 @@ async function send() {
     if (peep.kind === 'done') toast(`${bot} finished`);
     if (peep.kind === 'failed') toast(`${bot} failed — see activity`);
   };
-  src.addEventListener('receipt', () => { src.close(); thinking.classList.remove('thinking'); refresh(); });
+  src.addEventListener('receipt', e => {
+    src.close(); thinking.classList.remove('thinking'); refresh();
+    const { receipt } = JSON.parse(e.data);
+    if (receipt && receipt.hard_won) toast('hard-won run — feather it in activity 🪶');
+  });
 }
 
 async function refresh() {
@@ -405,8 +409,18 @@ async function refresh() {
 async function loadRuns() {
   const { receipts } = await api('/api/runs');
   $('#runs').innerHTML = receipts.map(r =>
-    `<tr><td>${esc(r.id)}</td><td>${esc(r.agent)}</td><td><span class="tag ${esc(r.status)}">${esc(r.status)}</span></td><td>${esc(r.steps)}</td><td>${((r.finished_ms - r.started_ms)/1000).toFixed(1)}</td></tr>`
-  ).join('') || '<tr><td colspan="5" style="color:var(--dim)">no runs yet</td></tr>';
+    `<tr><td>${esc(r.id)}</td><td>${esc(r.agent)}</td><td><span class="tag ${esc(r.status)}">${esc(r.status)}</span></td><td>${esc(r.steps)}</td><td>${((r.finished_ms - r.started_ms)/1000).toFixed(1)}</td>`
+    + `<td><button class="pill" data-feather="${esc(r.id)}" style="padding:4px 10px;font-size:11px" title="${r.hard_won ? 'hard-won run — distill what the fallback taught' : 'distill this run into a reusable skill'}">🪶</button></td></tr>`
+  ).join('') || '<tr><td colspan="6" style="color:var(--dim)">no runs yet</td></tr>';
+  document.querySelectorAll('[data-feather]').forEach(b => b.onclick = () => featherRun(b));
+}
+
+async function featherRun(button) {
+  button.disabled = true;
+  const r = await api('/api/feather', { run_id: button.dataset.feather });
+  if (r.error) { toast(`feather failed — ${r.error}`); button.disabled = false; return; }
+  button.textContent = '✓';
+  toast(`feathered — ${r.dir}`);
 }
 
 async function loadSettings() {

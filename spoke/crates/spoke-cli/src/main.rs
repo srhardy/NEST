@@ -44,7 +44,7 @@ enum Command {
     Diff,
     /// Harness detection, capabilities, drift and warnings
     Doctor,
-    /// Install a package: name-in-index, package dir/path, .md bot file, or https?:// / file:// URL
+    /// Install a package: name-in-index, package dir/path, .md bot file, skill dir (or ~/.nest/skills/<name>), or https?:// / file:// URL
     Add {
         spec: String,
         /// Show what would be installed without writing anything
@@ -349,6 +349,22 @@ fn materialize_spec(home: &Path, spec: &str) -> Result<PathBuf> {
     if path.extension().is_some_and(|e| e == "md") && path.is_file() {
         return wrap_md_as_package(home, &path);
     }
+    // a bare skill dir (a feather under ~/.nest/skills/, say) is a
+    // bot-authored artifact — wrap it as a one-skill package
+    if path.is_dir() && !path.join("package.toml").exists() && path.join("SKILL.md").is_file() {
+        return wrap_skill_dir_as_package(home, &path);
+    }
+    // `spoke add <skill>` — the name of a bot-authored skill already in ~/.nest/skills/
+    if !path.exists()
+        && spec
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        let nest_skill = home.join(".nest").join("skills").join(spec);
+        if nest_skill.join("SKILL.md").is_file() {
+            return wrap_skill_dir_as_package(home, &nest_skill);
+        }
+    }
     Ok(path)
 }
 
@@ -380,21 +396,17 @@ fn fetch_url(home: &Path, url: &str) -> Result<PathBuf> {
 /// A lone `.md` bot file installs as a one-agent package — the name
 /// comes from frontmatter if present, else the filename.
 fn wrap_md_as_package(home: &Path, file: &Path) -> Result<PathBuf> {
-    let body = std::fs::read_to_string(file)
-        .with_context(|| format!("reading {}", file.display()))?;
-    let name = body
-        .lines()
-        .skip_while(|l| *l != "---")
-        .skip(1)
-        .take_while(|l| *l != "---")
-        .find_map(|l| l.strip_prefix("name:").map(|n| n.trim().to_string()))
-        .unwrap_or_else(|| {
-            file.file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string()
-        });
-    let dir = paths::spoke_home(home).join("tmp").join(format!("{name}-pkg"));
+    let body =
+        std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+    let name = frontmatter_name(&body).unwrap_or_else(|| {
+        file.file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    });
+    let dir = paths::spoke_home(home)
+        .join("tmp")
+        .join(format!("{name}-pkg"));
     let agents = dir.join("agents");
     std::fs::create_dir_all(&agents).with_context(|| format!("creating {}", agents.display()))?;
     std::fs::copy(file, agents.join(format!("{name}.md")))
@@ -404,6 +416,80 @@ fn wrap_md_as_package(home: &Path, file: &Path) -> Result<PathBuf> {
         format!(
             "name = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"imported from {}\"\ntier = \"imported\"\n\n[source]\npath = \".\"\n\n[[agents]]\nname = \"{name}\"\npath = \"agents/{name}.md\"\n",
             file.display()
+        ),
+    )?;
+    Ok(dir)
+}
+
+/// The `name:` line of a `---`-fenced frontmatter block, if there is one.
+fn frontmatter_name(body: &str) -> Option<String> {
+    body.lines()
+        .skip_while(|l| *l != "---")
+        .skip(1)
+        .take_while(|l| *l != "---")
+        .find_map(|l| l.strip_prefix("name:").map(|n| n.trim().to_string()))
+        .filter(|n| !n.is_empty())
+}
+
+/// Directory names are slugs — lowercase, dashes for everything else.
+fn slug(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let s = s.trim_matches('-').to_string();
+    if s.is_empty() {
+        "learned-skill".into()
+    } else {
+        s
+    }
+}
+
+fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let dest = dst.join(entry.file_name());
+        if path.is_dir() {
+            std::fs::create_dir_all(&dest)
+                .with_context(|| format!("creating {}", dest.display()))?;
+            copy_dir_contents(&path, &dest)?;
+        } else {
+            std::fs::copy(&path, &dest).with_context(|| format!("copying {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// A directory holding SKILL.md — a feather a bot authored — wraps as a
+/// one-skill package so `spoke add` can install it into every harness.
+fn wrap_skill_dir_as_package(home: &Path, skill_dir: &Path) -> Result<PathBuf> {
+    let body = std::fs::read_to_string(skill_dir.join("SKILL.md"))
+        .with_context(|| format!("reading {}", skill_dir.join("SKILL.md").display()))?;
+    let name = frontmatter_name(&body).unwrap_or_else(|| {
+        skill_dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    });
+    let name = slug(&name);
+    let dir = paths::spoke_home(home)
+        .join("tmp")
+        .join(format!("{name}-skillpkg"));
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).with_context(|| format!("creating {}", src.display()))?;
+    copy_dir_contents(skill_dir, &src)?;
+    std::fs::write(
+        dir.join("package.toml"),
+        format!(
+            "name = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"bot-authored skill (nest feather)\"\ntier = \"bot-authored\"\n\n[source]\npath = \"src\"\n\n[[skills]]\nname = \"{name}\"\npath = \".\"\n"
         ),
     )?;
     Ok(dir)
@@ -1044,4 +1130,75 @@ fn budget(home: &Path, project: &Path, receipts: bool) -> Result<()> {
         println!("            all token figures are estimates (bytes/4 heuristic)");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spoke_registry::package::PackageManifest;
+
+    fn write_skill(dir: &Path, name: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: learned\n---\n\nDo the learned thing.\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn bare_skill_name_wraps_a_nest_skill_dir() {
+        let home = tempfile::tempdir().unwrap();
+        write_skill(&home.path().join(".nest/skills/learned-foo"), "learned-foo");
+        let pkg = materialize_spec(home.path(), "learned-foo").unwrap();
+        let manifest = PackageManifest::load(&pkg.join("package.toml")).unwrap();
+        assert_eq!(manifest.skills.len(), 1);
+        assert_eq!(manifest.skills[0].name, "learned-foo");
+        assert_eq!(manifest.skills[0].path, ".");
+        assert!(pkg.join("src/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn skill_dir_by_path_wraps_without_package_toml() {
+        let home = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        write_skill(&src.path().join("learned-bar"), "learned-bar");
+        let pkg = materialize_spec(
+            home.path(),
+            src.path().join("learned-bar").to_str().unwrap(),
+        )
+        .unwrap();
+        let manifest = PackageManifest::load(&pkg.join("package.toml")).unwrap();
+        assert_eq!(manifest.tier.as_deref(), Some("bot-authored"));
+        assert_eq!(manifest.skills[0].name, "learned-bar");
+    }
+
+    #[test]
+    fn dir_with_package_toml_resolves_normally() {
+        let home = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let pkg_dir = src.path().join("real-pkg");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(pkg_dir.join("package.toml"), "x").unwrap();
+        std::fs::write(pkg_dir.join("SKILL.md"), "ignored").unwrap();
+        let path = materialize_spec(home.path(), pkg_dir.to_str().unwrap()).unwrap();
+        assert_eq!(path, pkg_dir);
+    }
+
+    #[test]
+    fn unknown_bare_name_passes_through() {
+        let home = tempfile::tempdir().unwrap();
+        let path = materialize_spec(home.path(), "not-a-skill").unwrap();
+        assert_eq!(path, PathBuf::from("not-a-skill"));
+    }
+
+    #[test]
+    fn traversal_names_never_escape_the_skills_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let sneaky = home.path().join(".nest/secret");
+        std::fs::create_dir_all(&sneaky).unwrap();
+        std::fs::write(sneaky.join("SKILL.md"), "x").unwrap();
+        let path = materialize_spec(home.path(), "../secret").unwrap();
+        assert_eq!(path, PathBuf::from("../secret"));
+    }
 }

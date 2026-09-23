@@ -122,7 +122,10 @@ pub fn build_prompt(agent: &AgentSpec, task: &str, dirs: &NestDirs) -> String {
     if !agent.skills.is_empty() {
         prompt.push_str("\n\n## Skills\n\n");
         for name in &agent.skills {
-            match dirs.skill(name).and_then(|p| std::fs::read_to_string(p).ok()) {
+            match dirs
+                .skill(name)
+                .and_then(|p| std::fs::read_to_string(p).ok())
+            {
                 Some(body) => prompt.push_str(&format!("### {name}\n\n{}\n\n", body.trim())),
                 None => prompt.push_str(&format!("- {name}: missing — no SKILL.md found\n")),
             }
@@ -219,7 +222,11 @@ impl Perch for Codex {
     fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
         Launch {
             program: "codex".into(),
-            args: vec!["exec".into(), "--json".into(), build_prompt(agent, task, dirs)],
+            args: vec![
+                "exec".into(),
+                "--json".into(),
+                build_prompt(agent, task, dirs),
+            ],
             env: BTreeMap::new(),
         }
     }
@@ -382,7 +389,10 @@ mod tests {
     #[test]
     fn prompt_carries_persona_policy_and_task() {
         let agent = spec(&[("bash", ToolPolicy::Ask), ("read", ToolPolicy::Allow)]);
-        let dirs = NestDirs::resolve(&PathBuf::from("/"), Some(tempfile::tempdir().unwrap().path().to_path_buf()));
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
         let prompt = build_prompt(&agent, "do the thing", &dirs);
         assert!(prompt.contains("You are a test bot."));
         assert!(prompt.contains("bash: ask-first"));
@@ -397,7 +407,10 @@ mod tests {
             ("Write", ToolPolicy::Deny),
             ("Edit", ToolPolicy::Ask),
         ]);
-        let dirs = NestDirs::resolve(&PathBuf::from("/"), Some(tempfile::tempdir().unwrap().path().to_path_buf()));
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
         let launch = ClaudeCode.launch(&agent, "task", &dirs);
         let joined = launch.args.join(" ");
         assert!(joined.contains("--allowedTools Bash"));
@@ -430,9 +443,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("fakecli");
         std::fs::write(&bin, "#!/bin/sh\n").unwrap();
-        std::env::set_var("PATH", tmp.path());
+        // prepend, don't replace — tests share one process and blanking
+        // PATH would break every other test's `sh`/binary lookups
+        let original = env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![tmp.path().to_path_buf()];
+        paths.extend(env::split_paths(&original));
+        env::set_var("PATH", env::join_paths(paths).unwrap());
         assert!(which("fakecli").is_none(), "non-exec file must not count");
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(which("fakecli").is_some());
+        env::set_var("PATH", original);
     }
 }

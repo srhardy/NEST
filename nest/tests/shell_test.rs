@@ -193,6 +193,52 @@ fn shell_hatch_records_receipt() {
 }
 
 #[test]
+fn feather_endpoint_distills_a_run() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let port = start(&home, t.path());
+
+    http(
+        port,
+        "POST",
+        "/api/hatch",
+        Some(r#"{"bot":"bigbird","task":"say hi","perch":"echo"}"#),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let run_id = loop {
+        let runs = body(&http(port, "GET", "/api/runs", None));
+        let v: serde_json::Value = serde_json::from_str(&runs).unwrap_or_default();
+        if let Some(id) = v["receipts"]
+            .as_array()
+            .and_then(|rs| rs.first())
+            .and_then(|r| r["id"].as_str())
+        {
+            break id.to_string();
+        }
+        assert!(Instant::now() < deadline, "receipt never landed: {runs}");
+        thread::sleep(Duration::from_millis(100));
+    };
+
+    let r = body(&http(
+        port,
+        "POST",
+        "/api/feather",
+        Some(&format!(r#"{{"run_id":"{run_id}"}}"#)),
+    ));
+    assert!(r.contains("dir"), "{r}");
+
+    let skills = home.join("skills");
+    let skill_md = std::fs::read_dir(&skills)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path().join("SKILL.md"))
+        .find(|p| p.is_file())
+        .expect("no SKILL.md written");
+    let body = std::fs::read_to_string(&skill_md).unwrap();
+    assert!(body.contains("authored-by: bigbird"), "{body}");
+}
+
+#[test]
 fn cross_origin_writes_are_blocked() {
     let t = tempfile::tempdir().unwrap();
     let port = start(&t.path().join("home"), t.path());

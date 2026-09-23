@@ -59,6 +59,7 @@ mod tests {
             exit_code: Some(0),
             started_ms: started,
             finished_ms: started + 1,
+            hard_won: false,
             tail: vec![],
         }
     }

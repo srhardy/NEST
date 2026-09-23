@@ -143,6 +143,7 @@ mod tests {
             exit_code: Some(0),
             started_ms: 1,
             finished_ms: 2,
+            hard_won: false,
             tail: vec!["did the thing".into()],
         }
     }

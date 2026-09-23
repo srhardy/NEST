@@ -189,6 +189,10 @@ fn main() -> Result<()> {
             let task = task.join(" ");
             let receipt = run_bot(agent, &task, &cli, &dirs, &cwd)?;
             if receipt.status != Status::Done {
+                println!(
+                    "🪶 that run struggled — `nest feather {}` records what went wrong",
+                    receipt.id
+                );
                 std::process::exit(1);
             }
         }
@@ -212,8 +216,21 @@ fn main() -> Result<()> {
                 let path = roost::record(&dirs.roost(), receipt)?;
                 println!("  receipt: {}", path.display());
             }
-            if dispatch.winner.is_none() {
-                bail!("every candidate failed — receipts are in the roost");
+            match &dispatch.winner {
+                Some(winner) if winner.hard_won => println!(
+                    "🪶 hard-won run — `nest feather {}` distills what the fallback taught",
+                    winner.id
+                ),
+                Some(_) => {}
+                None => {
+                    if let Some((_, receipt)) = dispatch.attempts.last() {
+                        println!(
+                            "🪶 every candidate failed — `nest feather {}` records what not to try",
+                            receipt.id
+                        );
+                    }
+                    bail!("every candidate failed — receipts are in the roost");
+                }
             }
         }
         Cmd::Roost => {
@@ -239,6 +256,10 @@ fn main() -> Result<()> {
             if receipt.status == Status::Done {
                 println!("🐣 {} imprinted — first run verified", agent.name);
             } else {
+                println!(
+                    "🪶 that run struggled — `nest feather {}` records what went wrong",
+                    receipt.id
+                );
                 bail!(
                     "{} did not imprint — a bot that hasn't run isn't done",
                     agent.name
@@ -278,7 +299,11 @@ fn main() -> Result<()> {
             let (dirs, cwd) = resolve(&cli)?;
             nest::shell::serve(dirs, cwd, *port)?;
         }
-        Cmd::Feather { run_id, name, force } => {
+        Cmd::Feather {
+            run_id,
+            name,
+            force,
+        } => {
             let (dirs, _) = resolve(&cli)?;
             let dir = nest::feather::feather(&dirs, run_id, name.as_deref(), *force)?;
             println!("feathered {}", dir.display());
