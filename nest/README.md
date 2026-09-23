@@ -26,8 +26,8 @@ Everything Spoke projects, the engine consumes:
   → the roster (`AgentSpec`: job, mode, boss, max_steps, permissions, persona)
 - `.nest/routing.toml` → the brood's dispatch table
 - `.nest/services.toml` → declared daemons (surfaced by the shell, not yet booted)
-- `.nest/mcp.json` → harnesses that read it natively get it for free, since
-  hatchlings run in the project directory
+- `.nest/mcp.json` → projected by Spoke from `mcp[]` declarations, but no
+  harness reads it from `.nest/` today (nest itself doesn't consume it yet)
 
 ## The shell — `nest shell`
 

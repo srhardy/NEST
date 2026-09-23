@@ -105,18 +105,20 @@ but the default is the guided path."*
 
 ### The Phase-2 brief (Steven's GUI direction)
 
-- **Three dark themes on black**, user-switchable, OS-following by default
-  with an in-app override: **fluro** (neon text), **mono** (white→grey),
+- **Three dark themes on black**, user-switchable via the header picker
+  (no OS-theme following — all three are dark; the toggle claiming it was
+  removed): **fluro** (neon text), **mono** (white→grey),
   **multi** (each bot owns a colour). All imagery is crisp white animated
   characters; notifications/popups/speech bubbles follow the same theme.
-- **Minimized forms:** taskbar icon + tooltip, themed notification
-  bubbles, or a floating "nested birdy" mascot on the desktop — user picks,
-  respects OS theme unless overridden. (Native chrome — lands with the
-  Tauri wrapper; the web shell can't own the taskbar.)
+- **Minimized forms:** taskbar icon + tooltip, notification bubbles, or a
+  floating "nested birdy" mascot on the desktop — user picks. (Native
+  chrome — lands with the Tauri wrapper; the web shell can't own the
+  taskbar.)
 - **Bigbird is the boss's default name** — onboarding lets the user rename
   agents, roles, and abilities; it's the BOB concept given a nest identity.
 - **Engine picker at onboarding:** Claude Code / Codex / OpenCode / Pi
-  cards with **1-click install**; auto API-key generation + storage;
+  cards with **1-click install** *(auto API-key generation was cut — bots
+  use the CLI's own login; the onboarding toggle claiming it was removed)*;
   **free-first router** (free tier → cheapest paid) as the default power
   source — the free-llm router ships as a selectable Spoke plugin.
 - **Everything remote is a Spoke plugin:** telegram, slack, smart-watch —
@@ -232,6 +234,11 @@ means a dev build made it into production — worth a packaging audit pass.
 
 **Action:** needs the private repo's `electron-builder.yml` to apply. All
 Tier A items are pure config; Tier B needs a usage audit in the source.
+Verified publicly so far: on the `srhardy/hermes-desktop` fork, shipping
+only `better-sqlite3` + `electron-updater` cut the packaged `node_modules`
+payload 391 MB → 31 MB ([PR #1](https://github.com/srhardy/hermes-desktop/pull/1))
+— the technique works; the CommandCode-specific numbers above still need
+that repo's build config.
 
 ---
 

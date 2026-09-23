@@ -326,6 +326,20 @@ pub fn load_services(files: &[PathBuf]) -> Result<Vec<Service>> {
     Ok(Vec::new())
 }
 
+/// Read one `key: value` line out of the nest's `settings.md`.
+/// The file is plain markdown edited by hand or the settings tab, so
+/// lookups are deliberately line-shaped: a line must start with `key:`.
+pub fn setting(dirs: &crate::home::NestDirs, key: &str) -> Option<String> {
+    let text = fs::read_to_string(dirs.home.join("settings.md")).ok()?;
+    text.lines().map(str::trim).find_map(|line| {
+        line.strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(String::from)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
