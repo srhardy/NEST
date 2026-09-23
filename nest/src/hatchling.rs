@@ -59,6 +59,10 @@ pub struct Receipt {
     pub exit_code: Option<i32>,
     pub started_ms: u64,
     pub finished_ms: u64,
+    /// True when this run finished `Done` only after earlier dispatch
+    /// candidates failed — a hard-won run worth feathering.
+    #[serde(default)]
+    pub hard_won: bool,
     /// Last lines of output (capped), for receipts and triage.
     pub tail: Vec<String>,
 }
@@ -80,13 +84,20 @@ impl Receipt {
             exit_code: None,
             started_ms: now,
             finished_ms: now,
+            hard_won: false,
             tail: vec![error.to_string()],
         }
     }
 }
 
 /// Spawn `task` on `perch` as `agent`, in working directory `cwd`.
-pub fn hatch(agent: &AgentSpec, task: &str, perch: &dyn Perch, cwd: &Path, dirs: &crate::home::NestDirs) -> Result<Hatchling> {
+pub fn hatch(
+    agent: &AgentSpec,
+    task: &str,
+    perch: &dyn Perch,
+    cwd: &Path,
+    dirs: &crate::home::NestDirs,
+) -> Result<Hatchling> {
     let launch = perch.launch(agent, task, dirs);
     let mut cmd = Command::new(&launch.program);
     cmd.args(&launch.args)
@@ -211,6 +222,7 @@ pub fn wait(
         exit_code: code,
         started_ms: hatchling.started_ms,
         finished_ms: now_ms(),
+        hard_won: false,
         tail,
     }
 }

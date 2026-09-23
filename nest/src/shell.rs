@@ -518,6 +518,7 @@ impl Shell {
                         exit_code: Some(0),
                         started_ms: now,
                         finished_ms: now,
+                        hard_won: false,
                         tail,
                     }
                 }
@@ -534,6 +535,7 @@ impl Shell {
                         exit_code: s.code(),
                         started_ms: now,
                         finished_ms: now,
+                        hard_won: false,
                         tail,
                     }
                 }
@@ -550,6 +552,7 @@ impl Shell {
                         exit_code: None,
                         started_ms: now,
                         finished_ms: now,
+                        hard_won: false,
                         tail: vec![err],
                     }
                 }
@@ -1004,9 +1007,7 @@ fn route<'a>(
     }
     match (method, path) {
         (&Method::Get, "/") => respond(INDEX.to_string(), "text/html; charset=utf-8", 200),
-        (&Method::Get, "/birdy") => {
-            respond(BIRDY.to_string(), "text/html; charset=utf-8", 200)
-        }
+        (&Method::Get, "/birdy") => respond(BIRDY.to_string(), "text/html; charset=utf-8", 200),
         (&Method::Get, "/api/state") => json_response(shell.state_json()),
         (&Method::Get, "/api/runs") => json_response(shell.runs_json()),
         (&Method::Get, "/api/settings") => {
@@ -1072,6 +1073,21 @@ fn route<'a>(
             let v: Value = serde_json::from_str(&body).unwrap_or_default();
             match shell.interview_build(v["session"].as_u64().unwrap_or_default()) {
                 Ok(name) => json_response(json!({"built": name})),
+                Err(e) => json_response(json!({"error": format!("{e:#}")})),
+            }
+        }
+        // distill a finished run into ~/.nest/skills/<name>/SKILL.md — the
+        // activity tab's feather button shares this path with `nest feather`
+        (&Method::Post, "/api/feather") => {
+            let body = read_body(request);
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            match crate::feather::feather(
+                &shell.dirs,
+                v["run_id"].as_str().unwrap_or_default(),
+                v["name"].as_str(),
+                v["force"].as_bool().unwrap_or(false),
+            ) {
+                Ok(dir) => json_response(json!({"dir": dir.display().to_string()})),
                 Err(e) => json_response(json!({"error": format!("{e:#}")})),
             }
         }

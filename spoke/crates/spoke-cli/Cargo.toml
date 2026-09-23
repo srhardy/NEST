@@ -16,3 +16,6 @@ serde_json.workspace = true
 spoke-core = { path = "../spoke-core" }
 spoke-adapters = { path = "../spoke-adapters" }
 spoke-registry = { path = "../spoke-registry" }
+
+[dev-dependencies]
+tempfile.workspace = true

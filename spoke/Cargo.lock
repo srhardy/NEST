@@ -405,6 +405,7 @@ dependencies = [
  "spoke-adapters",
  "spoke-core",
  "spoke-registry",
+ "tempfile",
 ]
 
 [[package]]
