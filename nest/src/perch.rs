@@ -473,7 +473,14 @@ pub fn perch_named(name: &str) -> Option<Box<dyn Perch>> {
 }
 
 /// First detected real harness, else the echo stub (the spine always runs).
+/// `NEST_PERCH` pins one perch by name — for tests and daemon setups that
+/// must not depend on which agent CLIs happen to be installed on the box.
 pub fn default_perch() -> Box<dyn Perch> {
+    if let Ok(name) = env::var("NEST_PERCH") {
+        if let Some(perch) = perch_named(&name) {
+            return perch;
+        }
+    }
     let all = all_perches();
     all.into_iter()
         .find(|p| p.binary() != "" && p.detect())

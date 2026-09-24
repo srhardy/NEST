@@ -17,6 +17,9 @@ fn free_port() -> u16 {
 }
 
 fn start(home: &std::path::Path, cwd: &std::path::Path) -> u16 {
+    // dispatches must use the echo stub even when a real agent CLI is
+    // installed on the box (e.g. CI runner images ship several)
+    std::env::set_var("NEST_PERCH", "echo");
     std::fs::create_dir_all(home.join("agents")).unwrap();
     std::fs::write(
         home.join("agents/bigbird.md"),
