@@ -689,9 +689,9 @@ path = "."
             agents: vec![],
             requires: package::Requires::default(),
         };
-        // `fetch` accepts a resolved path source; the package walker must reject its link.
-        let materialized = Store::new(home.path()).fetch(&manifest).unwrap();
-        assert!(collect_files(&materialized.dir).is_err());
+        // `fetch` rejects the link while materializing the path source.
+        let err = Store::new(home.path()).fetch(&manifest).unwrap_err();
+        assert!(err.to_string().contains("symlinks"), "{err:#}");
         assert_eq!(
             fs::read_to_string(outside.path().join("secret.txt")).unwrap(),
             "secret-sentinel"
