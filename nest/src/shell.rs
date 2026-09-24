@@ -254,11 +254,15 @@ impl Interview {
     }
 }
 
+/// Shared run registry — Arc so detached watcher threads (auto-feather)
+/// can poll receipts without borrowing the Shell.
+type ShellRuns = Arc<Mutex<HashMap<String, Arc<Run>>>>;
+
 /// Shared shell state.
 pub struct Shell {
     dirs: NestDirs,
     cwd: PathBuf,
-    runs: Mutex<HashMap<String, Arc<Run>>>,
+    runs: ShellRuns,
     interviews: Mutex<HashMap<u64, Interview>>,
     /// Scheduled/event automations the patrol is watching.
     duties: Vec<patrol::Duty>,
@@ -272,7 +276,7 @@ impl Shell {
         Self {
             dirs,
             cwd,
-            runs: Mutex::new(HashMap::new()),
+            runs: Arc::new(Mutex::new(HashMap::new())),
             interviews: Mutex::new(HashMap::new()),
             duties,
             patrol_warnings,
@@ -281,13 +285,15 @@ impl Shell {
     }
 
     /// One dispatch path for routines: the patrol's timer and the
-    /// `/api/duties/<name>/fire` webhook both land here.
-    fn fire_duty(&self, d: &patrol::Duty) {
+    /// `/api/duties/<name>/fire` webhook both land here. Returns the run
+    /// id so callers can schedule the auto-feather check on it.
+    fn fire_duty(&self, d: &patrol::Duty) -> Option<String> {
         let prompt = format!("[routine '{}'] {}", d.spec.name, d.spec.prompt);
-        let _ = match &d.spec.bot {
+        let res = match &d.spec.bot {
             Some(bot) => self.start_hatch(bot, &prompt, None),
             None => self.start_brood(&prompt, None),
         };
+        res.ok()
     }
 
     /// First run plants a commented providers.toml — the format is
@@ -636,6 +642,7 @@ impl Shell {
             "perches": perch::detected_perches(),
             "providers": crate::forage::Router::from_dirs(&self.dirs).list(),
             "duties": patrol::describe(&self.duties),
+            "skills": crate::feather::list_skills(&self.dirs),
             "onboarding": self.onboarding_needed(),
         })
     }
@@ -698,6 +705,29 @@ impl Shell {
             run.finish(receipt);
         });
         Ok(run_id)
+    }
+
+    /// Poll one run's receipt (up to ~10s) then run the auto-feather
+    /// check. Hatch/brood/fire spawn detached threads, so the check must
+    /// wait for the receipt to land first.
+    fn auto_feather_after(&self, run_id: &str) {
+        let (runs, dirs, run_id) = (self.runs.clone(), self.dirs.clone(), run_id.to_string());
+        thread::spawn(move || {
+            for _ in 0..100 {
+                let receipt = runs
+                    .lock()
+                    .unwrap()
+                    .get(&run_id)
+                    .and_then(|r| r.receipt.lock().unwrap().clone());
+                if let Some(receipt) = receipt {
+                    if crate::feather::auto_feather_due(&dirs, &receipt) {
+                        let _ = crate::feather::feather(&dirs, &receipt.id, None, false);
+                    }
+                    return;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
     }
 
     /// One-click install: run the perch's install command, streaming its
@@ -1124,7 +1154,11 @@ fn spawn_watchers(shell: &Arc<Shell>) {
     {
         let shell = shell.clone();
         thread::spawn(move || {
-            patrol::run(&shell.duties, |d| shell.fire_duty(d));
+            patrol::run(&shell.duties, |d| {
+                if let Some(id) = shell.fire_duty(d) {
+                    shell.auto_feather_after(&id);
+                }
+            });
         });
     }
 }
@@ -1660,7 +1694,10 @@ fn route<'a>(
                 shell.start_brood(&task, perch.as_deref())
             };
             match res {
-                Ok(id) => json_response(json!({"id": id})),
+                Ok(id) => {
+                    shell.auto_feather_after(&id);
+                    json_response(json!({"id": id}))
+                }
                 Err(e) => json_response(json!({"error": format!("{e:#}")})),
             }
         }
@@ -1671,8 +1708,11 @@ fn route<'a>(
             match shell.duties.iter().find(|d| d.spec.name == name) {
                 Some(d) => {
                     d.stamp(patrol::now());
-                    shell.fire_duty(d);
-                    json_response(json!({"fired": name}))
+                    let run = shell.fire_duty(d);
+                    if let Some(id) = &run {
+                        shell.auto_feather_after(id);
+                    }
+                    json_response(json!({"fired": name, "run": run}))
                 }
                 None => json_response(json!({"error": "no such routine"})),
             }

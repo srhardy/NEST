@@ -73,7 +73,9 @@ Everything Spoke projects, the engine consumes:
   reusable `~/.nest/skills/<name>/SKILL.md` — provenance frontmatter
   (`authored-by`, `run`) records which bot earned it; another bot picks
   it up by listing `skills: [name]` in its frontmatter. The roster gets
-  smarter with use.
+  smarter with use. Opt in to `auto_feather: true` in settings.md and
+  hard-won/failed runs distill themselves; the settings tab lists every
+  learned skill, and `agent.lock` records each feather's provenance.
 - **Remotes** — the shell watches `~/.nest/remotes/<name>/inbox/*.md`:
   each file is brood-dispatched and the reply written to
   `outbox/<chat|channel>.txt`. The `remotes` package ships stdlib-only

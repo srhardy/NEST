@@ -215,7 +215,11 @@
         <div class="toggles">
           <div><span>free-first router — free tier first, cheapest paid fallback (off = providers.toml order)</span><span class="switch" data-key="router" data-on="free-first" data-off="declared"></span></div>
           <div><span>notifications — desktop pop-ups on every receipt when minimized</span><span class="switch" data-key="notifications" data-on="on" data-off="off"></span></div>
+          <div><span>auto-feather — distill hard-won/failed runs into skills without asking (needs a real provider)</span><span class="switch" data-key="auto_feather" data-on="true" data-off="false"></span></div>
         </div>
+        <h3 style="margin-top:18px">learned skills — the roster's memory</h3>
+        <p style="color:var(--dim);margin:4px 0 0">feathered from runs (manual 🪶 or auto) — bots pick them up via <code>skills:</code> in agent.toml.</p>
+        <table class="runs" style="margin-top:10px"><thead><tr><th>skill</th><th>author</th><th>run</th><th>when to use</th></tr></thead><tbody id="skills"></tbody></table>
         <h3 style="margin:18px 0 8px">settings.md</h3>
         <textarea id="settings-md" spellcheck="false"></textarea>
         <div style="margin-top:8px"><button class="pill" id="save-settings">save</button></div>
@@ -454,6 +458,7 @@ async function refresh() {
   const s = await api('/api/state');
   state.agents = s.agents; state.perches = s.perches;
   state.duties = s.duties; state.providers = s.providers;
+  state.skills = s.skills;
   renderRoster();
   const sb = $('#statusbar');
   const working = s.agents.filter(a => a.state === 'working').map(a => a.name);
@@ -556,6 +561,9 @@ async function loadSettings() {
   $('#providers').innerHTML = (state.providers || []).map(p =>
     `<tr><td>${esc(p.name)}</td><td>${esc(p.kind)}</td><td><span class="tag ${p.cost === 'free' ? 'done' : ''}">${esc(p.cost)}</span></td><td>${esc(p.model || '—')}</td><td>${esc(p.usage || '—')}</td><td>${p.exhausted ? 'over limit' : p.available ? 'ready' : 'not installed'}</td></tr>`
   ).join('') || '<tr><td colspan="6" style="color:var(--dim)">no providers.toml — echo stub answers until you add one</td></tr>';
+  $('#skills').innerHTML = (state.skills || []).map(s =>
+    `<tr><td>${esc(s.name)}</td><td>${esc(s.authored_by || '—')}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.run || '')}">${esc(s.run || '—')}</td><td>${esc(s.description || '—')}</td></tr>`
+  ).join('') || '<tr><td colspan="4" style="color:var(--dim)">no learned skills yet — feather a run in activity 🪶</td></tr>';
 }
 
 // a 1-click install is a run like any other — its peeps land in activity

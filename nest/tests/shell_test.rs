@@ -265,6 +265,69 @@ fn expert_cli_serves_read_only_commands() {
 }
 
 #[test]
+fn auto_feather_opt_in_distills_hard_runs() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    // a real provider (not echo) so feather can distill
+    std::fs::write(
+        home.join("providers.toml"),
+        "[[providers]]\nname = \"fake-llm\"\nkind = \"command\"\nprogram = \"sh\"\nargs = [\"-c\", \"printf -- '---\\nname: x\\ndescription: y\\n---\\n\\nlearned\\n'\"]\ncost = \"free\"\n",
+    )
+    .unwrap();
+    // opt in to auto-feather
+    std::fs::write(home.join("settings.md"), "auto_feather: true\n").unwrap();
+    let port = start(&home, t.path());
+
+    // state carries the skill index (empty before any feather)
+    let state = body(&http(port, "GET", "/api/state", None));
+    assert!(state.contains("\"skills\":[]"), "skill index missing: {state}");
+
+    // fail a hatch (unknown bot → spawn-failed receipt is NOT auto-feathered;
+    // only real receipts qualify — instead feather manually and check index)
+    http(
+        port,
+        "POST",
+        "/api/hatch",
+        Some(r#"{"bot":"bigbird","task":"say hi","perch":"echo"}"#),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let run_id = loop {
+        let runs = body(&http(port, "GET", "/api/runs", None));
+        let v: serde_json::Value = serde_json::from_str(&runs).unwrap_or_default();
+        if let Some(id) = v["receipts"]
+            .as_array()
+            .and_then(|rs| rs.first())
+            .and_then(|r| r["id"].as_str())
+        {
+            break id.to_string();
+        }
+        assert!(Instant::now() < deadline, "receipt never landed: {runs}");
+        thread::sleep(Duration::from_millis(100));
+    };
+    let r = body(&http(
+        port,
+        "POST",
+        "/api/feather",
+        Some(&format!(r#"{{"run_id":"{run_id}"}}"#)),
+    ));
+    assert!(r.contains("dir"), "manual feather: {r}");
+
+    // skill index now lists it, with lockfile provenance
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = body(&http(port, "GET", "/api/state", None));
+        if state.contains("learned-") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "skill never indexed: {state}");
+        thread::sleep(Duration::from_millis(200));
+    }
+    let lock = std::fs::read_to_string(home.join("agent.lock")).unwrap();
+    assert!(lock.contains("feathered by bigbird"), "lockfile provenance: {lock}");
+}
+
+#[test]
 fn feather_endpoint_distills_a_run() {
     let t = tempfile::tempdir().unwrap();
     let home = t.path().join("home");
