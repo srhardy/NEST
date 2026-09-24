@@ -34,14 +34,19 @@ Everything Spoke projects, the engine consumes:
 `nest shell` starts a tiny local server on `http://127.0.0.1:4747`
 (`--port` to change) — the one-window app over this same engine:
 
-- **Roster** — every bot as an animated bird (idle / working / waiting /
-  stuck / done); each bot owns a colour in the `multi` theme.
+- **Roster** — every bot as an animated bird (idle / thinking / working /
+  waiting / stuck / done); each bot owns a colour in the `multi` theme,
+  and every roster bot gets its own run-history tab (task, chat, test-drive).
 - **Ask the nest** — chat driving `brood` dispatch; clicking a roster bot
   chats it directly via `hatch`. Peeps stream live over SSE as loop
   chips — the watch-it-think view.
 - **Activity** — the roost's receipts.
 - **Settings** — detected perches, power-policy toggles, and the real
   `<home>/settings.md`, editable in place.
+- **Expert** — the raw truth, verbatim: `agent.toml` editable in place
+  (validated before it lands), everything else read-only, plus a
+  read-only CLI passthrough (`POST /api/cli`: agents, perches,
+  providers, roost).
 - **Themes** — `multi` / `fluro` / `mono`; all dark with white animated
   birds, and toasts/speech bubbles follow the theme too.
 

@@ -578,13 +578,29 @@ impl Shell {
     }
 
     /// A bot's current display state for the roster: a live run means
-    /// `working`; otherwise its latest receipt, else `idle`.
+    /// `working` (output/steps flowing) or `thinking` (hatched, no output
+    /// yet — the watch-it-think beat); otherwise its latest receipt, else
+    /// `idle`.
     fn agent_state(&self, name: &str, receipts: &[Receipt]) -> &'static str {
         let runs = self.runs.lock().unwrap();
         for run in runs.values() {
-            if !run.done.load(Ordering::SeqCst) && run.active.lock().unwrap().contains(name) {
-                return "working";
+            if run.done.load(Ordering::SeqCst) {
+                continue;
             }
+            let active = run.active.lock().unwrap();
+            if !active.contains(name) {
+                continue;
+            }
+            let events = run.events.lock().unwrap();
+            let saw_output = events.iter().any(|e| {
+                e.get("bot").and_then(|b| b.as_str()) == Some(name)
+                    && e
+                        .get("peep")
+                        .and_then(|p| p.get("kind"))
+                        .and_then(|k| k.as_str())
+                        .is_some_and(|k| k == "output" || k == "step")
+            });
+            return if saw_output { "working" } else { "thinking" };
         }
         drop(runs);
         match receipts.iter().find(|r| r.agent == name).map(|r| r.status) {
@@ -1414,6 +1430,9 @@ fn route<'a>(
         }
         // Expert mode's raw view: the real config files, verbatim, and
         // whether each exists — "expert" must mean showing the truth.
+        // POST /api/expert saves agent.toml back (validated first).
+        // POST /api/cli runs read-only nest commands (agents, perches,
+        // providers, roost) and returns their output.
         (&Method::Get, "/api/expert") => {
             let mut files: Vec<PathBuf> =
                 vec![shell.cwd.join("agent.toml"), shell.cwd.join("AGENTS.md")];
@@ -1447,6 +1466,114 @@ fn route<'a>(
                 })
                 .collect();
             json_response(json!({"files": files}))
+        }
+        (&Method::Post, "/api/expert") => {
+            let body = read_body(request);
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            let path = v["path"].as_str().unwrap_or_default().to_string();
+            let content = v["content"].as_str().unwrap_or_default().to_string();
+            // only agent.toml is writable — it is validated before it lands
+            let allowed = shell.cwd.join("agent.toml") == PathBuf::from(&path)
+                || shell.dirs.home.join("agent.toml") == PathBuf::from(&path);
+            if !allowed {
+                return json_response(json!({"error": "only agent.toml is editable in expert mode"}));
+            }
+            let parsed: Result<Manifest, _> = toml::from_str(&content);
+            let manifest = match parsed {
+                Ok(m) => m,
+                Err(e) => return json_response(json!({"error": format!("agent.toml does not parse: {e}")})),
+            };
+            if let Err(e) = manifest.validate() {
+                return json_response(json!({"error": format!("agent.toml invalid: {e:#}")}));
+            }
+            match std::fs::write(&path, &content) {
+                Ok(()) => json_response(json!({"saved": path})),
+                Err(e) => json_response(json!({"error": format!("cannot write: {e}")})),
+            }
+        }
+        (&Method::Post, "/api/cli") => {
+            let body = read_body(request);
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            let argv: Vec<String> = v["argv"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let Some((cmd, _rest)) = argv.split_first() else {
+                return json_response(json!({"error": "empty command"}));
+            };
+            // read-only allowlist — hatches stay in the terminal for now
+            let out = match cmd.as_str() {
+                "agents" => {
+                    let (agents, warnings) = shell.agents();
+                    let mut lines: Vec<String> = agents
+                        .iter()
+                        .map(|a| {
+                            format!(
+                                "{:<16} {:<10} {}{}",
+                                a.name,
+                                a.mode.map(|m| format!("{m:?}").to_lowercase()).unwrap_or_default(),
+                                a.job,
+                                if a.boss { " (boss)" } else { "" }
+                            )
+                        })
+                        .collect();
+                    lines.extend(warnings.iter().map(|w| format!("warning: {w}")));
+                    lines.join("\n")
+                }
+                "perches" => perch::detected_perches()
+                    .iter()
+                    .map(|p| {
+                        format!(
+                            "{:<14} {}",
+                            p.name,
+                            if p.installed {
+                                "installed".to_string()
+                            } else {
+                                p.install
+                                    .map(|c| format!("not found — install: {c}"))
+                                    .unwrap_or_else(|| "not found".into())
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "providers" => crate::forage::Router::from_dirs(&shell.dirs)
+                    .list()
+                    .iter()
+                    .map(|p| {
+                        format!(
+                            "{:<18} {:<8} {:<6} {}",
+                            p.name,
+                            p.kind,
+                            p.cost,
+                            if p.exhausted {
+                                "over limit"
+                            } else if p.available {
+                                "ready"
+                            } else {
+                                "not installed"
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "roost" => roost::receipts(&shell.dirs.roost())
+                    .unwrap_or_default()
+                    .iter()
+                    .take(20)
+                    .map(|r| {
+                        format!(
+                            "{:<44} {:<16} {:?} steps {}",
+                            r.id, r.agent, r.status, r.steps
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                other => {
+                    return json_response(json!({"error": format!("refused — '{other}' is not read-only (agents, perches, providers, roost)")}));
+                }
+            };
+            json_response(json!({"output": out}))
         }
         (&Method::Post, "/api/settings") => {
             let body = read_body(request);

@@ -206,6 +206,65 @@ fn shell_hatch_records_receipt() {
 }
 
 #[test]
+fn expert_cli_serves_read_only_commands() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    // expert save path needs a manifest to validate against
+    std::fs::write(
+        home.join("agent.toml"),
+        "version = 1\nharnesses = [\"nest\"]\n",
+    )
+    .unwrap();
+    let port = start(&home, t.path());
+
+    let agents = body(&http(
+        port,
+        "POST",
+        "/api/cli",
+        Some(r#"{"argv":["agents"]}"#),
+    ));
+    assert!(agents.contains("bigbird"), "agents output: {agents}");
+
+    let perches = body(&http(
+        port,
+        "POST",
+        "/api/cli",
+        Some(r#"{"argv":["perches"]}"#),
+    ));
+    assert!(perches.contains("echo"), "perches output: {perches}");
+
+    let refused = body(&http(
+        port,
+        "POST",
+        "/api/cli",
+        Some(r#"{"argv":["hatch"]}"#),
+    ));
+    assert!(refused.contains("refused"), "hatch must be refused: {refused}");
+
+    // expert save round-trips a valid agent.toml…
+    let path = home.join("agent.toml");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let save = body(&http(
+        port,
+        "POST",
+        "/api/expert",
+        Some(&serde_json::json!({"path": path.display().to_string(), "content": content}).to_string()),
+    ));
+    assert!(save.contains("saved"), "expert save: {save}");
+
+    // …and refuses invalid TOML without touching the file
+    let bad = body(&http(
+        port,
+        "POST",
+        "/api/expert",
+        Some(&serde_json::json!({"path": path.display().to_string(), "content": "[[[not toml"}).to_string()),
+    ));
+    assert!(bad.contains("does not parse"), "expert must refuse bad toml: {bad}");
+    assert!(std::fs::read_to_string(&path).unwrap() == content);
+}
+
+#[test]
 fn feather_endpoint_distills_a_run() {
     let t = tempfile::tempdir().unwrap();
     let home = t.path().join("home");

@@ -33,6 +33,7 @@
   .bot .jb { font-size:11px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:130px; }
   .bot .dot { margin-left:auto; width:8px; height:8px; border-radius:50%; }
   .st-working .dot { background:#34d399; box-shadow:0 0 6px #34d399; }
+  .st-thinking .dot { background:#a78bfa; box-shadow:0 0 6px #a78bfa; animation:pulse 1.2s infinite; }
   .st-idle .dot { background:#555; }
   .st-done .dot { background:#38bdf8; }
   .st-stuck .dot { background:#f87171; box-shadow:0 0 6px #f87171; }
@@ -60,6 +61,8 @@
   @keyframes tilt { 0%,100% { transform:rotate(-8deg) } 50% { transform:rotate(8deg) } }
   @keyframes zzz { 0% { opacity:0; transform:translate(0,0) } 30% { opacity:1 } 100% { opacity:0; transform:translate(6px,-10px) } }
   .st-idle .bird { animation:bob 3s ease-in-out infinite; }
+  .st-thinking .bird { animation:tilt 1.2s infinite; }
+  .st-thinking .bird .wing { animation:flap 1.2s infinite; }
   .st-working .bird { animation:bob .8s ease-in-out infinite; }
   .st-working .bird .wing { animation:flap .6s infinite; }
   .st-waiting .bird { animation:tilt 1.2s infinite; }
@@ -321,15 +324,59 @@ function renderTabs() {
     b.onclick = () => switchPane(id);
     t.appendChild(b);
   }
+  // per-bot tabs: every roster bot gets its own run-history tab
+  for (const a of state.agents) {
+    const id = 'bot-' + a.name;
+    const b = document.createElement('button');
+    b.className = 'tab tab-bot' + (state.tab === id ? ' active' : '');
+    b.style.setProperty('--t', botColor(a.name));
+    b.textContent = a.name;
+    b.title = a.job || a.name;
+    b.onclick = () => switchPane(id);
+    t.appendChild(b);
+  }
 }
 
 function switchPane(id) {
   state.tab = id;
   document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+  if (id.startsWith('bot-')) { showBotPane(id.slice(4)); renderTabs(); return; }
+  hideBotPane();
   $('#pane-' + id).classList.add('active');
   renderTabs();
   if (id === 'activity') loadRuns();
   if (id === 'settings') loadSettings();
+}
+
+// per-bot run history: a built-on-demand pane listing the roost filtered
+// to one bot, newest first — resumable context without new backend state
+function showBotPane(name) {
+  hideBotPane();
+  const pane = document.createElement('div');
+  pane.className = 'pane active';
+  pane.id = 'pane-bot';
+  pane.innerHTML = `<div class="scroll"><h3 style="margin-bottom:12px">${esc(name)} — run history</h3>
+    <div style="margin-bottom:12px;display:flex;gap:8px"><button class="pill" id="bot-chat">💬 chat with ${esc(name)}</button>
+    <button class="pill" id="bot-imprint">🐣 test-drive</button></div>
+    <table class="runs"><thead><tr><th>run</th><th>status</th><th>steps</th><th>secs</th><th>task</th></tr></thead><tbody id="bot-runs"></tbody></table></div>`;
+  document.querySelector('section').appendChild(pane);
+  $('#bot-chat').onclick = () => { state.chatBot = name; renderTabs(); renderChatHint(); switchPane('chat'); };
+  $('#bot-imprint').onclick = async () => {
+    const r = await api('/api/hatch', { bot: name, task: 'introduce yourself in one line' });
+    if (r.error) { toast('test-drive failed — ' + r.error); return; }
+    toast('test-drive hatched — watch activity');
+  };
+  api('/api/runs').then(({ receipts }) => {
+    const rows = (receipts || []).filter(r => r.agent === name);
+    $('#bot-runs').innerHTML = rows.map(r =>
+      `<tr><td>${esc(r.id)}</td><td><span class="tag ${esc(r.status)}">${esc(r.status)}</span></td><td>${esc(r.steps)}</td><td>${((r.finished_ms - r.started_ms)/1000).toFixed(1)}</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.task)}">${esc(r.task)}</td></tr>`
+    ).join('') || '<tr><td colspan="5" style="color:var(--dim)">no runs yet — chat or test-drive above</td></tr>';
+  });
+}
+
+function hideBotPane() {
+  const old = $('#pane-bot');
+  if (old) old.remove();
 }
 
 function renderChatHint() {
@@ -452,9 +499,29 @@ let expertLoaded = false;
 async function loadExpert() {
   const r = await api('/api/expert');
   expertLoaded = true;
-  $('#expert-files').innerHTML = (r.files || []).map(f =>
-    `<details${f.exists ? ' open' : ''}><summary>${esc(f.path)}${f.note ? ` — <span class="missing">${esc(f.note)}</span>` : ''}${f.exists ? '' : '<span class="missing"> — not created yet</span>'}</summary><pre>${esc(f.exists ? f.content : '(nothing here — this file has not been written)')}</pre></details>`
-  ).join('');
+  $('#expert-files').innerHTML = (r.files || []).map((f, i) => {
+    const editable = f.path.endsWith('agent.toml') && f.exists;
+    return `<details${f.exists ? ' open' : ''}><summary>${esc(f.path)}${f.note ? ` — <span class="missing">${esc(f.note)}</span>` : ''}${f.exists ? '' : '<span class="missing"> — not created yet</span>'}</summary>`
+      + (editable
+        ? `<div style="margin:0 12px 12px"><textarea id="expert-${i}" spellcheck="false" style="width:100%;min-height:220px;background:#000;border:1px solid var(--edge);border-radius:8px;color:var(--text);font:11px/1.5 ui-monospace,monospace;padding:10px">${esc(f.content)}</textarea>
+           <div style="margin-top:6px;display:flex;gap:8px;align-items:center"><button class="pill" data-expert-save="${i}" data-path="${esc(f.path)}" style="padding:4px 14px;font-size:11px">save agent.toml</button><span id="expert-msg-${i}" style="font-size:11px;color:var(--dim)">validated on save — bad TOML never lands</span></div></div>`
+        : `<pre>${esc(f.exists ? f.content : '(nothing here — this file has not been written)')}</pre>`)
+      + `</details>`;
+  }).join('')
+  + `<details><summary>cli passthrough — run any nest command here</summary><div style="margin:0 12px 12px;display:flex;gap:8px"><input id="expert-cli" placeholder="e.g. agents / clutch bigbird &quot;task one&quot; &quot;task two&quot;" style="flex:1;background:#000;border:1px solid var(--edge);border-radius:8px;color:var(--text);padding:8px;font:inherit;font-size:12px"><button class="pill" id="expert-run" style="padding:4px 14px;font-size:11px">run</button></div><pre id="expert-out" style="margin:0 12px 12px">output lands here — read-only commands only (agents, perches, providers, roost)</pre></details>`;
+  document.querySelectorAll('[data-expert-save]').forEach(b => b.onclick = async () => {
+    const i = b.dataset.expertSave;
+    const r = await api('/api/expert', { path: b.dataset.path, content: $('#expert-' + i).value });
+    $('#expert-msg-' + i).textContent = r.saved ? 'saved ✓ — re-render with spoke sync' : ('save refused — ' + r.error);
+  });
+  const runBtn = $('#expert-run');
+  if (runBtn) runBtn.onclick = async () => {
+    const argv = $('#expert-cli').value.trim().split(/\s+/).filter(Boolean);
+    const safe = ['agents', 'perches', 'providers', 'roost'];
+    if (!safe.includes(argv[0])) { $('#expert-out').textContent = 'refused — read-only commands only: ' + safe.join(', '); return; }
+    const r = await api('/api/cli', { argv });
+    $('#expert-out').textContent = r.output || ('error — ' + r.error);
+  };
 }
 
 function applyMode(mode) {
