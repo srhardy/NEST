@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use nest::brood::{Brood, Via};
+use nest::clutch;
 use nest::hatchling::{self, Status};
 use nest::home::NestDirs;
 use nest::peep::Peep;
@@ -180,6 +181,21 @@ fn loads_roster_and_routes_from_nest_dirs() {
     let plan = brood.plan("update the docs");
     assert_eq!(plan[0].agent.name, "pack-bot");
     assert_eq!(plan[1].agent.name, "boss");
+}
+
+#[test]
+fn clutch_runs_tasks_in_parallel_and_returns_all_receipts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
+    let agent = spec_with("worker", None);
+    let perch = Echo;
+    let tasks = vec!["first".to_string(), "second".to_string(), "third".to_string()];
+    let receipts = clutch::run(&agent, &tasks, &perch, tmp.path(), &dirs);
+    assert_eq!(receipts.len(), 3);
+    assert!(receipts.iter().all(|r| r.status == Status::Done));
+    let mut got: Vec<&str> = receipts.iter().map(|r| r.task.as_str()).collect();
+    got.sort();
+    assert_eq!(got, vec!["first", "second", "third"]);
 }
 
 #[test]

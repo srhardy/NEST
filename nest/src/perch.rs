@@ -96,11 +96,6 @@ fn is_executable(path: &std::path::Path) -> bool {
     path.is_file()
 }
 
-/// Public exec-bit check for provider availability (same rule as `which`).
-pub fn is_exec_pub(path: &std::path::Path) -> bool {
-    is_executable(path)
-}
-
 /// The prompt every perch feeds its harness: persona + tool policy +
 /// skills + task. A declared skill's `SKILL.md` resolves project-first
 /// (same precedence as agents); a missing one is named in the prompt
@@ -220,11 +215,39 @@ impl Perch for Codex {
         "codex"
     }
     fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
+        // Codex has no per-tool flags — only the two global dials. A write-ish
+        // tool that is asked-or-denied drops the run to `read-only`; approval
+        // is always `never` (stdin is null headless — nothing can answer a
+        // prompt, so failures go back to the model). Anything finer stays
+        // prompt-only via `build_prompt`'s Tool policy section.
+        const WRITE_TOOLS: [&str; 8] = [
+            "write",
+            "edit",
+            "bash",
+            "shell",
+            "exec",
+            "apply",
+            "patch",
+            "powershell",
+        ];
+        let locked_down = agent.permissions.iter().any(|(tool, policy)| {
+            matches!(policy, ToolPolicy::Ask | ToolPolicy::Deny)
+                && WRITE_TOOLS.contains(&tool.to_lowercase().as_str())
+        });
+        let sandbox = if locked_down {
+            "read-only"
+        } else {
+            "workspace-write"
+        };
         Launch {
             program: "codex".into(),
             args: vec![
                 "exec".into(),
                 "--json".into(),
+                "--sandbox".into(),
+                sandbox.into(),
+                "--ask-for-approval".into(),
+                "never".into(),
                 build_prompt(agent, task, dirs),
             ],
             env: BTreeMap::new(),
@@ -248,6 +271,12 @@ impl Perch for Codex {
 }
 
 /// `opencode` (OpenCode CLI): `opencode run <prompt>` — plain lines out.
+///
+/// Permissions ride `OPENCODE_PERMISSION` (inlined JSON permission config,
+/// same shape as config.json's `permission` object): `allow` stays allow,
+/// `ask` can't prompt in a headless run so it joins `deny`. `write` folds
+/// into opencode's `edit` (which covers edit/write/patch); unknown names
+/// pass through verbatim and the harness ignores what it doesn't know.
 pub struct OpenCode;
 impl Perch for OpenCode {
     fn name(&self) -> &'static str {
@@ -257,10 +286,27 @@ impl Perch for OpenCode {
         "opencode"
     }
     fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
+        let mut env = BTreeMap::new();
+        if !agent.permissions.is_empty() {
+            let mut perm = serde_json::Map::new();
+            for (tool, policy) in &agent.permissions {
+                let name = tool.to_lowercase();
+                let name = if name == "write" { "edit".into() } else { name };
+                let action = match policy {
+                    ToolPolicy::Allow => "allow",
+                    ToolPolicy::Ask | ToolPolicy::Deny => "deny",
+                };
+                perm.insert(name, serde_json::Value::String(action.into()));
+            }
+            env.insert(
+                "OPENCODE_PERMISSION".into(),
+                serde_json::Value::Object(perm).to_string(),
+            );
+        }
         Launch {
             program: "opencode".into(),
             args: vec!["run".into(), build_prompt(agent, task, dirs)],
-            env: BTreeMap::new(),
+            env,
         }
     }
     fn parse(&self, line: &str) -> Option<Peep> {
@@ -268,6 +314,76 @@ impl Perch for OpenCode {
     }
     fn install_cmd(&self) -> Option<&'static str> {
         Some("npm i -g opencode-ai")
+    }
+}
+
+/// `pi` (Pi coding-agent CLI): `pi --mode json -p <prompt>` — one JSON
+/// event per line, final response on stdout, exits when done.
+///
+/// Permissions map to pi's tool flags: asked-or-denied tools join
+/// `--exclude-tools` (pi's denylist). Allowed tools need no flag — pi
+/// enables its builtins by default, so `allow` stays the default and only
+/// denials are passed. Anything finer stays prompt-only via `build_prompt`.
+pub struct Pi;
+impl Perch for Pi {
+    fn name(&self) -> &'static str {
+        "pi"
+    }
+    fn binary(&self) -> &'static str {
+        "pi"
+    }
+    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
+        let mut denied: Vec<String> = agent
+            .permissions
+            .iter()
+            .filter(|(_, policy)| matches!(policy, ToolPolicy::Ask | ToolPolicy::Deny))
+            .map(|(tool, _)| tool.to_lowercase())
+            .collect();
+        denied.sort();
+        denied.dedup();
+        let mut args = vec![
+            "--mode".into(),
+            "json".into(),
+            "-p".into(),
+            build_prompt(agent, task, dirs),
+        ];
+        if !denied.is_empty() {
+            args.push("--exclude-tools".into());
+            args.push(denied.join(","));
+        }
+        Launch {
+            program: "pi".into(),
+            args,
+            env: BTreeMap::new(),
+        }
+    }
+    fn parse(&self, line: &str) -> Option<Peep> {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let v: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => return Some(Peep::Output { text: line.into() }),
+        };
+        let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if kind.contains("tool") {
+            return Some(Peep::Step {
+                n: 0,
+                label: kind.into(),
+            });
+        }
+        for key in ["text", "message", "content", "output"] {
+            if let Some(text) = v.get(key).and_then(|t| t.as_str()) {
+                if !text.is_empty() {
+                    return Some(Peep::Output { text: text.into() });
+                }
+            }
+        }
+        Some(Peep::Output { text: line.into() })
+    }
+    fn install_cmd(&self) -> Option<&'static str> {
+        Some("npm install -g --ignore-scripts @earendil-works/pi-coding-agent")
     }
 }
 
@@ -326,6 +442,7 @@ pub fn all_perches() -> Vec<Box<dyn Perch>> {
         Box::new(ClaudeCode),
         Box::new(Codex),
         Box::new(OpenCode),
+        Box::new(Pi),
         Box::new(Echo),
         Box::new(Fail),
     ]
@@ -433,7 +550,91 @@ mod tests {
     fn echo_is_always_detected() {
         assert!(Echo.detect());
         assert!(perch_named("echo").is_some());
+        assert!(perch_named("pi").is_some());
         assert!(perch_named("nope").is_none());
+    }
+
+    #[test]
+    fn codex_launch_defaults_to_workspace_write_and_never_ask() {
+        let agent = spec(&[]);
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
+        let launch = Codex.launch(&agent, "task", &dirs);
+        let joined = launch.args.join(" ");
+        assert!(joined.contains("--sandbox workspace-write"));
+        assert!(joined.contains("--ask-for-approval never"));
+    }
+
+    #[test]
+    fn codex_launch_locks_down_on_denied_write_tools() {
+        let agent = spec(&[("Write", ToolPolicy::Deny)]);
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
+        let launch = Codex.launch(&agent, "task", &dirs);
+        assert!(launch.args.join(" ").contains("--sandbox read-only"));
+    }
+
+    #[test]
+    fn opencode_launch_carries_permission_env() {
+        let agent = spec(&[
+            ("bash", ToolPolicy::Allow),
+            ("edit", ToolPolicy::Ask),
+            ("Write", ToolPolicy::Deny),
+        ]);
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
+        let launch = OpenCode.launch(&agent, "task", &dirs);
+        let perm: serde_json::Value = serde_json::from_str(
+            launch.env.get("OPENCODE_PERMISSION").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(perm["bash"], "allow");
+        assert_eq!(perm["edit"], "deny");
+    }
+
+    #[test]
+    fn opencode_launch_skips_env_without_permissions() {
+        let agent = spec(&[]);
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
+        assert!(OpenCode.launch(&agent, "task", &dirs).env.is_empty());
+    }
+
+    #[test]
+    fn pi_launch_uses_json_print_mode_with_denylist() {
+        let agent = spec(&[
+            ("read", ToolPolicy::Allow),
+            ("Edit", ToolPolicy::Deny),
+            ("Bash", ToolPolicy::Ask),
+        ]);
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
+        let launch = Pi.launch(&agent, "task", &dirs);
+        let joined = launch.args.join(" ");
+        assert!(joined.contains("--mode json"));
+        assert!(joined.contains("-p"));
+        assert!(joined.contains("--exclude-tools bash,edit"));
+        assert!(Pi.install_cmd().is_some());
+    }
+
+    #[test]
+    fn pi_parse_maps_events() {
+        let step = r#"{"type":"tool_use","tool":"bash"}"#;
+        assert!(matches!(Pi.parse(step), Some(Peep::Step { .. })));
+        let text = r#"{"type":"message","text":"all done"}"#;
+        assert!(matches!(Pi.parse(text), Some(Peep::Output { .. })));
+        assert!(Pi.parse("").is_none());
+        assert!(matches!(Pi.parse("plain line"), Some(Peep::Output { .. })));
     }
 
     #[cfg(unix)]

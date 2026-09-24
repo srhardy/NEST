@@ -269,9 +269,7 @@ fn provider_available(spec: &ProviderSpec) -> bool {
     if bin.is_empty() {
         return false;
     }
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|d| crate::perch::is_exec_pub(&d.join(bin))))
-        .unwrap_or(false)
+    crate::perch::which(bin).is_some()
 }
 
 /// Turn a spec into a callable provider.

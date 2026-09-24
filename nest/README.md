@@ -9,7 +9,7 @@ events, collect results, no control plane. A unified provider layer
 
 | Term | What it is |
 |---|---|
-| **perch** | a wrapper around one agent CLI (`claude-code`, `codex`, plus builtin `echo`/`fail` stubs) — each harness gets a perch |
+| **perch** | a wrapper around one agent CLI (`claude-code`, `codex`, `opencode`, `pi`, plus builtin `echo`/`fail` stubs) — each harness gets a perch |
 | **hatchling** | a running bot instance — an egg hatches into a bot |
 | **peep** | lifecycle events streamed off a hatchling (`spawned`, `output`, `step`, `ask`, `budget_exceeded`, `done`, `failed`) — the single stream the shell and the future watch-it-think dashboard render |
 | **roost** | where finished runs rest: JSON receipts in `~/.nest/roost/` — the activity log |
@@ -86,6 +86,7 @@ nest perches                          # which harness CLIs are installed
 nest agents                           # the roster
 nest hatch doc-keeper "sync readme"   # run one bot, peeps stream live
 nest brood "update the docs"          # brood picks: routing → boss → fallback
+nest clutch boss "task one" "task two" # one bot, many tasks, in parallel
 nest roost                            # recent runs (receipts)
 nest imprint boss "first look"        # first verified run — 🐣 imprinted
 nest ask "prompt"                     # routed provider call (free-first failover)
@@ -99,9 +100,16 @@ directory), `--perch` (pick a harness explicitly).
 ## Design rules inherited from the content layer
 
 - **Permissions map to harness flags.** On `claude-code`: `allow` →
-  `--allowedTools`, `deny` → `--disallowedTools`. `ask` can't prompt in a
-  headless run, so it joins the deny list — the prompt still states the
-  policy in words, and the receipt shows what was unreachable.
+  `--allowedTools`, `deny` → `--disallowedTools`. On `codex`: a denied or
+  asked write-ish tool (write/edit/bash/shell/exec/apply/patch/powershell)
+  drops the run to `--sandbox read-only` (else `workspace-write`), and
+  approval is always `--ask-for-approval never` — Codex has no per-tool
+  flags, only the two global dials. On `opencode`: permissions ride
+  `OPENCODE_PERMISSION` (inlined JSON `permission` config; `write` folds
+  into `edit`). On `pi`: asked-or-denied tools join `--exclude-tools`.
+  `ask` can't prompt in a headless run anywhere, so it always joins the
+  deny side — the prompt still states the policy in words, and the receipt
+  shows what was unreachable.
 - **`max_steps` is a hard budget.** Step peeps are counted; at the cap →
   kill → `BudgetExceeded` on the receipt.
 - **Every attempt is a receipt.** Failed ladder runs land in the roost

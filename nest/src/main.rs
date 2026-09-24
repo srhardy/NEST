@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use nest::brood::Brood;
+use nest::clutch;
 use nest::forage::{ForageRequest, Router};
 use nest::hatchling::{self, Status};
 use nest::home::NestDirs;
@@ -52,6 +53,15 @@ enum Cmd {
     },
     /// Let the brood pick the bot (routing → boss → fallback).
     Brood { task: Vec<String> },
+    /// Run one bot on many tasks in parallel (the council primitive).
+    /// Each argument after the bot name is one task — quote multi-word
+    /// tasks. Receipts land in completion order (fastest first).
+    Clutch {
+        /// Bot name from .nest/agents/.
+        bot: String,
+        /// The tasks, one per argument.
+        task: Vec<String>,
+    },
     /// Show recent runs (receipts from the roost).
     Roost,
     /// A bot's first verified run — a bot that hasn't run isn't done.
@@ -240,6 +250,33 @@ fn main() -> Result<()> {
                     }
                     bail!("every candidate failed — receipts are in the roost");
                 }
+            }
+        }
+        Cmd::Clutch { bot, task } => {
+            let (dirs, cwd) = resolve(&cli)?;
+            let agents = load_roster(&dirs)?;
+            let agent = find_agent(&agents, bot)?;
+            if task.is_empty() {
+                bail!("clutch needs at least one task — `nest clutch {bot} \"task one\" \"task two\"`");
+            }
+            let perch = pick_perch(&cli)?;
+            let receipts = clutch::run(agent, task, perch.as_ref(), &cwd, &dirs);
+            let mut failed = 0;
+            for receipt in &receipts {
+                let path = roost::record(&dirs.roost(), receipt)?;
+                println!(
+                    "  {} → {:?} (steps {}) — receipt: {}",
+                    receipt.task,
+                    receipt.status,
+                    receipt.steps,
+                    path.display()
+                );
+                if receipt.status != Status::Done {
+                    failed += 1;
+                }
+            }
+            if failed > 0 {
+                bail!("{failed} of {} clutch tasks did not finish Done", receipts.len());
             }
         }
         Cmd::Roost => {
