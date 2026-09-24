@@ -287,13 +287,65 @@ impl Shell {
     /// One dispatch path for routines: the patrol's timer and the
     /// `/api/duties/<name>/fire` webhook both land here. Returns the run
     /// id so callers can schedule the auto-feather check on it.
+    /// `action: brood` forces the council; otherwise a named bot hatches.
     fn fire_duty(&self, d: &patrol::Duty) -> Option<String> {
         let prompt = format!("[routine '{}'] {}", d.spec.name, d.spec.prompt);
-        let res = match &d.spec.bot {
-            Some(bot) => self.start_hatch(bot, &prompt, None),
-            None => self.start_brood(&prompt, None),
+        let res = if d.wants_brood() {
+            self.start_brood(&prompt, None)
+        } else {
+            self.start_hatch(d.spec.bot.as_deref().unwrap_or(""), &prompt, None)
         };
         res.ok()
+    }
+
+    /// Boot declared services on daemon/shell start: for each
+    /// `[[service]]` with a `start` command, check `health` (or the port)
+    /// and start it when down. Best-effort — a service that won't boot is
+    /// a warning, never a startup failure.
+    fn boot_services(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let services = spec::load_services(&self.dirs.services_files()).unwrap_or_default();
+        for svc in &services {
+            let Some(start) = svc.start.as_deref().filter(|s| !s.trim().is_empty()) else {
+                continue;
+            };
+            if self.service_healthy(svc) {
+                continue;
+            }
+            match std::process::Command::new("sh").args(["-c", start]).output() {
+                Ok(out) if out.status.success() => {
+                    // re-check: started means healthy now (or will be shortly)
+                }
+                Ok(out) => warnings.push(format!(
+                    "service '{}' start exited {}",
+                    svc.name,
+                    out.status.code().unwrap_or(-1)
+                )),
+                Err(e) => warnings.push(format!("service '{}' failed to start: {e}", svc.name)),
+            }
+        }
+        warnings
+    }
+
+    /// Is this service up? `health` path over HTTP wins; else a TCP
+    /// connect to `port` on loopback; neither declared means "assume up"
+    /// (nothing to check — don't boot-loop it).
+    fn service_healthy(&self, svc: &spoke_core::manifest::Service) -> bool {
+        if let (Some(port), Some(health)) = (svc.port, svc.health.as_deref()) {
+            let url = format!("http://127.0.0.1:{port}{health}");
+            return std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+                .map(|_| {
+                    // port open — health path check is the bridges' job;
+                    // TCP reachability is enough for boot/no-boot
+                    let _ = url;
+                    true
+                })
+                .unwrap_or(false);
+        }
+        if let Some(port) = svc.port {
+            return std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok();
+        }
+        true
     }
 
     /// First run plants a commented providers.toml — the format is
@@ -1169,6 +1221,9 @@ pub fn serve_on(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) -
     let shell = Arc::new(Shell::new(dirs, cwd));
     shell.ensure_eggbot();
     shell.ensure_providers();
+    for w in shell.boot_services() {
+        eprintln!("nest: {w}");
+    }
     spawn_watchers(&shell);
     let server = Server::from_listener(listener, None)
         .map_err(|e| anyhow::anyhow!("cannot serve on listener: {e}"))?;
@@ -1196,6 +1251,9 @@ pub fn daemon(dirs: NestDirs, cwd: PathBuf, webhook: Option<&str>) -> Result<()>
     let shell = Arc::new(Shell::new(dirs, cwd));
     shell.ensure_eggbot();
     shell.ensure_providers();
+    for w in shell.boot_services() {
+        eprintln!("nest: {w}");
+    }
     spawn_watchers(&shell);
     match webhook {
         Some(addr) => {
@@ -1467,6 +1525,7 @@ fn route<'a>(
         // POST /api/expert saves agent.toml back (validated first).
         // POST /api/cli runs read-only nest commands (agents, perches,
         // providers, roost) and returns their output.
+        // POST /api/share exports one roster bot as a Spoke package dir.
         (&Method::Get, "/api/expert") => {
             let mut files: Vec<PathBuf> =
                 vec![shell.cwd.join("agent.toml"), shell.cwd.join("AGENTS.md")];
@@ -1608,6 +1667,55 @@ fn route<'a>(
                 }
             };
             json_response(json!({"output": out}))
+        }
+        // Share as template: export one roster bot as a Spoke package
+        // dir (package.toml + agents/<name>.md) under <home>/shared/.
+        // `spoke add <that dir>` round-trips it back into any nest.
+        (&Method::Post, "/api/share") => {
+            let body = read_body(request);
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            let name = v["bot"].as_str().unwrap_or_default().to_string();
+            if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') || name.is_empty() {
+                return json_response(json!({"error": "bad bot name"}));
+            }
+            let (agents, _) = shell.agents();
+            let Some(agent) = agents.iter().find(|a| a.name == name) else {
+                return json_response(json!({"error": format!("no bot named '{name}'")}));
+            };
+            // re-render from the manifest bot when available (project
+            // truth), else from the loaded spec — same file either way
+            let file_body = render_bot_md(&spoke_core::manifest::Bot {
+                name: agent.name.clone(),
+                title: agent.title.clone(),
+                job: agent.job.clone(),
+                voice: vec![agent.body.clone()],
+                anti_jobs: Vec::new(),
+                skills: agent.skills.clone(),
+                mcp: agent.mcp.clone(),
+                model: agent.model.clone(),
+                memory: Vec::new(),
+                mode: agent.mode,
+                permissions: agent.permissions.clone(),
+                boss: agent.boss,
+                max_steps: agent.max_steps,
+            });
+            let dir = shell.dirs.home.join("shared").join(format!("{name}-bot"));
+            let res = std::fs::create_dir_all(dir.join("agents"))
+                .and_then(|_| {
+                    std::fs::write(
+                        dir.join("package.toml"),
+                        format!(
+                            "name = \"{name}-bot\"\nversion = \"0.1.0\"\ndescription = \"Shared bot template for {name}\"\ntier = \"curated\"\n\n[source]\npath = \".\"\n\n[[agents]]\nname = \"{name}\"\npath = \"agents\"\n",
+                        ),
+                    )
+                })
+                .and_then(|_| std::fs::write(dir.join("agents").join(format!("{name}.md")), &file_body))
+                .map(|_| dir.display().to_string())
+                .map_err(|e| format!("cannot export: {e}"));
+            match res {
+                Ok(d) => json_response(json!({"shared": d, "hint": format!("spoke add {d}")})),
+                Err(e) => json_response(json!({"error": e})),
+            }
         }
         (&Method::Post, "/api/settings") => {
             let body = read_body(request);

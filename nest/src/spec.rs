@@ -230,7 +230,9 @@ pub struct AutomationSpec {
     /// 5-field cron expression.
     #[serde(default)]
     pub schedule: Option<String>,
-    /// Event trigger — the patrol understands `file-change:<glob>`.
+    /// Event trigger — the patrol understands `file-change:<glob>`,
+    /// `git-push` (new commits on the cwd repo's HEAD), and `app:<name>`
+    /// (a marker file `<home>/events/<name>.ping` touched by anything).
     #[serde(default)]
     pub event: Option<String>,
     #[serde(default)]
@@ -239,6 +241,13 @@ pub struct AutomationSpec {
     pub bot: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// How the firing runs: `hatch` (default, needs `bot`) or `brood`.
+    #[serde(default)]
+    pub action: Option<String>,
+    /// Reply style for remote-triggered runs: `reply` (default, outbox)
+    /// or `quiet` (roost only, no outbox write).
+    #[serde(default)]
+    pub reply: Option<String>,
 }
 
 fn default_true() -> bool {

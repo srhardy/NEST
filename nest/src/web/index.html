@@ -209,8 +209,12 @@
         <p style="color:var(--dim);margin:4px 0 0">declared in providers.toml; tried in this order, first answer wins. limits are per-window — a spent provider sits out until its reset.</p>
         <table class="runs" style="margin-top:10px"><thead><tr><th>provider</th><th>kind</th><th>cost</th><th>model</th><th>window</th><th>status</th></tr></thead><tbody id="providers"></tbody></table>
         <h3 style="margin-top:18px">routines — the patrol</h3>
-        <p style="color:var(--dim);margin:4px 0 0">declared in automations.toml; each firing is a normal run — receipts in activity.</p>
+        <p style="color:var(--dim);margin:4px 0 0">declared in automations.toml — cron, file watches, git-push, app pings; each firing is a normal run — receipts in activity. trigger an app event: <code>echo &gt; ~/.nest/events/&lt;name&gt;.ping</code></p>
         <table class="runs" style="margin-top:10px"><thead><tr><th>name</th><th>trigger</th><th>bot</th><th>last fired</th><th></th></tr></thead><tbody id="duties"></tbody></table>
+        <h3 style="margin-top:18px">marketplace — starter packs</h3>
+        <p style="color:var(--dim);margin:4px 0 0">share a roster bot as a template (<code>spoke add</code> installs it anywhere).</p>
+        <div style="display:flex;gap:8px;margin-top:8px"><input id="share-bot" placeholder="bot name to share…" style="flex:1;background:var(--card);border:1px solid var(--edge);border-radius:10px;padding:8px 12px;color:var(--hi);font:inherit;font-size:12px"><button class="pill" id="share-go">share</button></div>
+        <div id="share-out" style="margin-top:6px;font-size:12px;color:var(--dim)"></div>
         <h3 style="margin-top:10px">power policy</h3>
         <div class="toggles">
           <div><span>free-first router — free tier first, cheapest paid fallback (off = providers.toml order)</span><span class="switch" data-key="router" data-on="free-first" data-off="declared"></span></div>
@@ -564,6 +568,16 @@ async function loadSettings() {
   $('#skills').innerHTML = (state.skills || []).map(s =>
     `<tr><td>${esc(s.name)}</td><td>${esc(s.authored_by || '—')}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.run || '')}">${esc(s.run || '—')}</td><td>${esc(s.description || '—')}</td></tr>`
   ).join('') || '<tr><td colspan="4" style="color:var(--dim)">no learned skills yet — feather a run in activity 🪶</td></tr>';
+  const shareGo = $('#share-go');
+  if (shareGo && !shareGo.dataset.wired) {
+    shareGo.dataset.wired = '1';
+    shareGo.onclick = async () => {
+      const bot = $('#share-bot').value.trim();
+      if (!bot) return;
+      const r = await api('/api/share', { bot });
+      $('#share-out').textContent = r.shared ? `shared → ${r.shared} — install anywhere with: ${r.hint}` : ('share failed — ' + r.error);
+    };
+  }
 }
 
 // a 1-click install is a run like any other — its peeps land in activity

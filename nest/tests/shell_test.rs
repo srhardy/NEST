@@ -381,6 +381,53 @@ fn feather_endpoint_distills_a_run() {
 }
 
 #[test]
+fn share_endpoint_exports_a_bot_template() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let port = start(&home, t.path());
+
+    let r = body(&http(
+        port,
+        "POST",
+        "/api/share",
+        Some(r#"{"bot":"bigbird"}"#),
+    ));
+    assert!(r.contains("shared"), "share: {r}");
+    assert!(r.contains("spoke add"), "share hint: {r}");
+    let dir = home.join("shared/bigbird-bot");
+    assert!(dir.join("package.toml").is_file(), "no package.toml");
+    let md = std::fs::read_to_string(dir.join("agents/bigbird.md")).unwrap();
+    assert!(md.contains("name: bigbird"), "{md}");
+
+    let bad = body(&http(
+        port,
+        "POST",
+        "/api/share",
+        Some(r#"{"bot":"ghost"}"#),
+    ));
+    assert!(bad.contains("no bot named"), "share must refuse: {bad}");
+}
+
+#[test]
+fn patrol_triggers_cover_git_push_and_app_events() {
+    // unit-covered in patrol tests; shell state must surface git-push
+    // duties as armed triggers (not "unsupported")
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("automations.toml"),
+        "[[automation]]\nname = \"push-watch\"\nevent = \"git-push\"\nprompt = \"summarize the push\"\nbot = \"bigbird\"\n\n[[automation]]\nname = \"deploy-hook\"\nevent = \"app:deploy\"\nprompt = \"deploy finished\"\naction = \"brood\"\nreply = \"quiet\"\n",
+    )
+    .unwrap();
+    let port = start(&home, t.path());
+    let state = body(&http(port, "GET", "/api/state", None));
+    assert!(state.contains("git-push"), "git-push duty missing: {state}");
+    assert!(state.contains("app:deploy"), "app duty missing: {state}");
+    assert!(!state.contains("unsupported trigger"), "duties unsupported: {state}");
+}
+
+#[test]
 fn webhook_inbox_drop_auth_and_reply() {
     let t = tempfile::tempdir().unwrap();
     let home = t.path().join("home");

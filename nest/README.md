@@ -62,13 +62,20 @@ Everything Spoke projects, the engine consumes:
   windows sit out until reset, tracked in `~/.nest/usage/` and shown
   on the settings tab (`GET /api/state`, `nest providers`,
   `nest ask --provider x`).
-- **Routines** — `automations.toml` schedules (5-field cron, UTC) and
-  `file-change:` watches run as ordinary dispatches via the patrol;
-  `POST /api/duties/<name>/fire` fires one now (the settings button
-  and external webhooks share it); armed triggers list under settings.
-- **Daemon** — `nest daemon` runs the watchers (patrol + remotes) with
-  no HTTP at all: the launchd/systemd unit for "bots that work while
-  the lid is closed"; receipts still land in the roost.
+- **Routines** — `automations.toml` schedules (5-field cron, UTC),
+  `file-change:` watches, `git-push` (new HEAD commits), and `app:<name>`
+  pings (`<home>/events/<name>.ping`, consumed on fire) run as ordinary
+  dispatches via the patrol; `action: brood` forces the council,
+  `reply: quiet` skips outbox writes; `POST /api/duties/<name>/fire`
+  fires one now (the settings button and external webhooks share it);
+  armed triggers list under settings.
+- **Daemon** — `nest daemon` boots declared `[[service]]`s (health/port
+  check, `start` when down, warnings never fatal) then runs the watchers
+  (patrol + remotes) with no HTTP at all: the launchd/systemd unit for
+  "bots that work while the lid is closed"; receipts still land in the roost.
+- **Sharing** — settings marketplace exports any roster bot as a Spoke
+  package dir (`POST /api/share` → `<home>/shared/<bot>-bot/` with
+  package.toml + agents md); `spoke add <that dir>` installs it anywhere.
 - **Feather** — `nest feather <run-id>` distills a finished run into a
   reusable `~/.nest/skills/<name>/SKILL.md` — provenance frontmatter
   (`authored-by`, `run`) records which bot earned it; another bot picks

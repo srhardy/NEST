@@ -17,6 +17,10 @@ enum Trigger {
     Cron { spec: [Field; 5] },
     /// Fires when the newest mtime under the glob changes.
     FileChange { root: PathBuf, glob: String },
+    /// Fires when the cwd repo's HEAD commit changes.
+    GitPush { root: PathBuf },
+    /// Fires when `<home>/events/<name>.ping` is touched (consumed on fire).
+    AppEvent { path: PathBuf },
     /// Declared but unhandled — surfaced as armed-but-waiting.
     Unknown(String),
 }
@@ -165,11 +169,38 @@ pub struct Duty {
     trigger: Trigger,
     last_fired: AtomicU64,
     /// For FileChange: newest mtime seen (baseline set on first scan).
+    /// For GitPush: hashed HEAD (baseline set on first scan).
     seen: AtomicU64,
 }
 
+fn hash_head(head: &str) -> u64 {
+    // FNV-1a 64 — a cheap content stamp, not crypto
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in head.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    // reserve u64::MAX for the unseen baseline
+    if h == u64::MAX { h - 1 } else { h }
+}
+
+/// Current HEAD commit of the repo at `root`, via `git rev-parse`.
+fn git_head(root: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?;
+    let s = s.trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
 impl Duty {
-    pub fn new(spec: AutomationSpec, cwd: &Path) -> Duty {
+    pub fn new(spec: AutomationSpec, cwd: &Path, home: &Path) -> Duty {
         let trigger = if let Some(cron) = &spec.schedule {
             match parse_cron(cron) {
                 Some(spec) => Trigger::Cron { spec },
@@ -180,6 +211,14 @@ impl Duty {
                 Trigger::FileChange {
                     root: cwd.to_path_buf(),
                     glob: glob.to_string(),
+                }
+            } else if ev == "git-push" {
+                Trigger::GitPush {
+                    root: cwd.to_path_buf(),
+                }
+            } else if let Some(name) = ev.strip_prefix("app:") {
+                Trigger::AppEvent {
+                    path: home.join("events").join(format!("{name}.ping")),
                 }
             } else {
                 Trigger::Unknown(ev.clone())
@@ -221,6 +260,31 @@ impl Duty {
                     true
                 }
             }
+            Trigger::GitPush { root } => {
+                let Some(head) = git_head(root) else {
+                    return false; // not a repo (or git missing) — never fires
+                };
+                let stamp = hash_head(&head);
+                let seen = self.seen.load(SeqCst);
+                if seen == u64::MAX {
+                    self.seen.store(stamp, SeqCst);
+                    return false; // first scan is baseline
+                }
+                stamp != seen && {
+                    self.seen.store(stamp, SeqCst);
+                    self.last_fired.store(now, SeqCst);
+                    true
+                }
+            }
+            Trigger::AppEvent { path } => {
+                if !path.is_file() {
+                    return false;
+                }
+                // consume the ping so it fires exactly once per touch
+                std::fs::remove_file(path).ok();
+                self.last_fired.store(now, SeqCst);
+                true
+            }
             Trigger::Unknown(_) => false,
         }
     }
@@ -235,14 +299,32 @@ impl Duty {
         match &self.trigger {
             Trigger::Cron { .. } => format!("cron: {}", self.spec.schedule.clone().unwrap()),
             Trigger::FileChange { glob, .. } => format!("file-change: {glob}"),
+            Trigger::GitPush { .. } => "git-push".to_string(),
+            Trigger::AppEvent { path } => format!(
+                "app:{}",
+                path.file_stem().and_then(|s| s.to_str()).unwrap_or("?")
+            ),
             Trigger::Unknown(e) => format!("unsupported trigger: {e}"),
         }
+    }
+
+    /// How this duty runs when it fires: `action: brood` forces the
+    /// council; otherwise a named bot hatches, brood covers the rest.
+    pub fn wants_brood(&self) -> bool {
+        self.spec.action.as_deref().is_some_and(|a| a.eq_ignore_ascii_case("brood"))
+            || self.spec.bot.is_none()
+    }
+
+    /// Remote-triggered runs with `reply: quiet` skip the outbox write.
+    pub fn quiet(&self) -> bool {
+        self.spec.reply.as_deref().is_some_and(|r| r.eq_ignore_ascii_case("quiet"))
     }
 }
 
 /// Everything the patrol is watching.
 pub fn load_duties(dirs: &NestDirs, cwd: &Path) -> (Vec<Duty>, Vec<String>) {
     let (autos, mut warns) = spec::load_automations(&dirs.automation_files());
+    let home = dirs.home.clone();
     let duties = autos
         .into_iter()
         .filter(|a| {
@@ -256,7 +338,7 @@ pub fn load_duties(dirs: &NestDirs, cwd: &Path) -> (Vec<Duty>, Vec<String>) {
             }
             true
         })
-        .map(|a| Duty::new(a, cwd))
+        .map(|a| Duty::new(a, cwd, &home))
         .collect();
     (duties, warns)
 }
@@ -322,6 +404,8 @@ mod tests {
                 prompt: "p".into(),
                 bot: None,
                 enabled: true,
+                action: None,
+                reply: None,
             },
             trigger: Trigger::Cron { spec: c },
             last_fired: AtomicU64::new(0),
@@ -350,11 +434,14 @@ mod tests {
             prompt: "p".into(),
             bot: None,
             enabled: true,
+            action: None,
+            reply: None,
         };
-        let d = Duty::new(s.clone(), Path::new("."));
+        let home = tempfile::tempdir().unwrap();
+        let d = Duty::new(s.clone(), Path::new("."), home.path());
         assert!(matches!(d.trigger, Trigger::Unknown(_)));
         s.schedule = Some("* * * * *".into());
-        let d = Duty::new(s, Path::new("."));
+        let d = Duty::new(s, Path::new("."), home.path());
         assert!(matches!(d.trigger, Trigger::Cron { .. }));
     }
 
@@ -371,16 +458,33 @@ mod tests {
             prompt: "p".into(),
             bot: None,
             enabled: true,
+            action: None,
+            reply: None,
         };
-        let d = Duty::new(s.clone(), dir.path());
+        let d = Duty::new(s.clone(), dir.path(), dir.path());
         assert!(!d.due(100), "first scan is baseline");
         std::thread::sleep(Duration::from_millis(1100));
         std::fs::write(src.join("b.rs"), "fn b(){}").unwrap();
         assert!(d.due(now()), "new file fires");
         assert!(!d.due(now() + 1), "unchanged doesn't refire");
         s.event = Some("reboot".into());
-        let d = Duty::new(s, dir.path());
+        let d = Duty::new(s.clone(), dir.path(), dir.path());
         assert!(!d.due(now()), "unknown event never fires");
+        s.event = Some("app:deploy".into());
+        s.schedule = None;
+        let d = Duty::new(s.clone(), dir.path(), dir.path());
+        assert!(matches!(d.trigger, Trigger::AppEvent { .. }));
+        assert!(!d.due(now()), "no ping file — no fire");
+        std::fs::create_dir_all(dir.path().join("events")).unwrap();
+        std::fs::write(dir.path().join("events/deploy.ping"), "go").unwrap();
+        assert!(d.due(now()), "ping file fires");
+        assert!(!dir.path().join("events/deploy.ping").exists(), "ping consumed");
+        assert!(!d.due(now()), "consumed ping doesn't refire");
+        s.event = Some("git-push".into());
+        let d = Duty::new(s, dir.path(), dir.path());
+        // dir is not a git repo — never fires, never errors
+        assert!(matches!(d.trigger, Trigger::GitPush { .. }));
+        assert!(!d.due(now()));
         let _ = SeqCst;
     }
 }
