@@ -158,7 +158,7 @@ fn run_bot(
     let perch = pick_perch(cli)?;
     let mut h = hatchling::hatch(agent, task, perch.as_ref(), cwd, dirs)?;
     let name = agent.name.clone();
-    let receipt = hatchling::wait(&mut h, task, perch.as_ref(), agent.max_steps, |peep| {
+    let receipt = hatchling::wait(&mut h, task, perch.as_ref(), agent, cwd, |peep| {
         if let Some(line) = peep_line(&name, peep) {
             println!("{line}");
         }

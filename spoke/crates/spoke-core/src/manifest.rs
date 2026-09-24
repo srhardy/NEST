@@ -144,6 +144,22 @@ pub struct Bot {
     /// Step budget for a single run (Bob-style `steps:` guardrail).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
+    /// Per-bot spend budget — a preset name (concise | balanced | full)
+    /// or a `daily-NNNk`-style cap. Consulted by the engine before a run;
+    /// unknown shapes warn, never block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<String>,
+    /// Automation names this bot owns — must each match a declared
+    /// `[[automations]]` entry. Rendered into the agent file so the
+    /// roster shows who answers which routine.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routines: Vec<String>,
+    /// Network egress policy: `none` (default — local files only),
+    /// `same-project` (project remotes/registries), or `open`. Rendered
+    /// into the agent file as a policy note; harnesses without an egress
+    /// control surface it prompt-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<String>,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -253,6 +269,33 @@ impl Bot {
                 self.name
             );
         }
+        if let Some(e) = &self.egress {
+            if !["none", "same-project", "open"].contains(&e.as_str()) {
+                anyhow::bail!(
+                    "bot '{}' egress '{e}' must be one of: none, same-project, open",
+                    self.name
+                );
+            }
+        }
+        if let Some(b) = &self.budget {
+            let b = b.trim();
+            let preset = ["concise", "balanced", "full"].contains(&b);
+            let daily = b.strip_prefix("daily-").is_some_and(|rest| {
+                rest.strip_suffix('k')
+                    .is_some_and(|n| n.parse::<u32>().is_ok_and(|n| n > 0))
+            });
+            if !preset && !daily {
+                anyhow::bail!(
+                    "bot '{}' budget '{b}' must be a preset (concise|balanced|full) or daily-NNNk",
+                    self.name
+                );
+            }
+        }
+        for r in &self.routines {
+            if r.trim().is_empty() {
+                anyhow::bail!("bot '{}' has an empty routines entry", self.name);
+            }
+        }
         Ok(())
     }
 }
@@ -355,6 +398,16 @@ impl Manifest {
         for automation in &self.automations {
             automation.validate()?;
         }
+        for bot in &self.bots {
+            for r in &bot.routines {
+                if !self.automations.iter().any(|a| a.name == *r) {
+                    anyhow::bail!(
+                        "bot '{}' claims routine '{r}' — no [[automations]] entry declares it",
+                        bot.name
+                    );
+                }
+            }
+        }
         for route in &self.routing {
             route.validate()?;
         }
@@ -430,7 +483,10 @@ preset = "balanced"   # concise | balanced | full
 # `boss = true` marks the orchestrator (at most one): it receives un-routed
 # intents and delegates to the council via [[routing]]. `mode = "subagent"`
 # bots spool on demand and auto-clean. `permissions` sets per-tool policy
-# (allow | ask | deny); `max_steps` is a per-run step budget.
+# (allow | ask | deny); `max_steps` is a per-run step budget; `budget`
+# (concise|balanced|full or daily-NNNk) is the spend budget; `routines`
+# names the [[automations]] this bot owns; `egress`
+# (none | same-project | open) is the network policy.
 # [[bots]]
 # name = "eggbot"
 # title = "Dr. Eggbot"
@@ -441,6 +497,7 @@ preset = "balanced"   # concise | balanced | full
 # mode = "primary"
 # boss = true
 # max_steps = 30
+# budget = "balanced"
 # permissions = { bash = "ask", edit = "ask", read = "allow" }
 
 # Routing — the Boss's dispatch table: keywords/patterns -> bot, with an

@@ -97,9 +97,10 @@ fn is_executable(path: &std::path::Path) -> bool {
 }
 
 /// The prompt every perch feeds its harness: persona + tool policy +
-/// skills + task. A declared skill's `SKILL.md` resolves project-first
-/// (same precedence as agents); a missing one is named in the prompt
-/// so the run reports it instead of silently ignoring it.
+/// spend budget + routines + network egress + skills + task. A declared
+/// skill's `SKILL.md` resolves project-first (same precedence as agents);
+/// a missing one is named in the prompt so the run reports it instead of
+/// silently ignoring it.
 pub fn build_prompt(agent: &AgentSpec, task: &str, dirs: &NestDirs) -> String {
     let mut prompt = String::new();
     prompt.push_str(agent.body.trim());
@@ -112,6 +113,23 @@ pub fn build_prompt(agent: &AgentSpec, task: &str, dirs: &NestDirs) -> String {
                 ToolPolicy::Deny => "never",
             };
             prompt.push_str(&format!("- {tool}: {word}\n"));
+        }
+    }
+    if let Some(egress) = agent.egress.as_deref() {
+        let note = match egress {
+            "none" => "work offline — local files only, no network fetches",
+            "same-project" => "project remotes and registries only — no open web",
+            _ => "open network access is allowed for this bot",
+        };
+        prompt.push_str(&format!("\n## Network\n\n- egress: {egress} — {note}\n"));
+    }
+    if let Some(budget) = agent.budget.as_deref() {
+        prompt.push_str(&format!("\n## Budget\n\n- budget: {budget} — stay inside it\n"));
+    }
+    if !agent.routines.is_empty() {
+        prompt.push_str("\n## Routines\n\n");
+        for r in &agent.routines {
+            prompt.push_str(&format!("- {r}\n"));
         }
     }
     if !agent.skills.is_empty() {
@@ -499,6 +517,9 @@ mod tests {
             permissions: perms.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             skills: vec![],
             mcp: vec![],
+            budget: None,
+            routines: Vec::new(),
+            egress: None,
             body: "You are a test bot.".into(),
         }
     }
@@ -515,6 +536,33 @@ mod tests {
         assert!(prompt.contains("bash: ask-first"));
         assert!(prompt.contains("read: allow"));
         assert!(prompt.ends_with("do the thing\n"));
+    }
+
+    #[test]
+    fn prompt_carries_egress_policy() {
+        let mut agent = spec(&[]);
+        agent.egress = Some("none".into());
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
+        let prompt = build_prompt(&agent, "task", &dirs);
+        assert!(prompt.contains("egress: none"));
+        assert!(prompt.contains("work offline"));
+    }
+
+    #[test]
+    fn prompt_carries_budget_and_routines() {
+        let mut agent = spec(&[]);
+        agent.budget = Some("daily-50k".into());
+        agent.routines = vec!["morning-triage".into()];
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
+        let prompt = build_prompt(&agent, "task", &dirs);
+        assert!(prompt.contains("budget: daily-50k"));
+        assert!(prompt.contains("morning-triage"));
     }
 
     #[test]

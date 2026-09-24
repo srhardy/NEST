@@ -190,6 +190,9 @@ impl Interview {
             permissions: self.permissions(),
             boss: false,
             max_steps: Some(30),
+            budget: None,
+            routines: Vec::new(),
+            egress: Some("same-project".to_string()),
         }
     }
 
@@ -533,7 +536,7 @@ impl Shell {
         if let Some(m) = &bot.model {
             body.push_str(&format!("model = \"{m}\"\n"));
         }
-        body.push_str("mode = \"primary\"\nmax_steps = 30\npermissions = { ");
+        body.push_str("mode = \"primary\"\nmax_steps = 30\negress = \"same-project\"\npermissions = { ");
         body.push_str(
             &bot.permissions
                 .iter()
@@ -590,7 +593,7 @@ impl Shell {
             .context("rendered bot not found in roster")?;
         let perch = perch::perch_named("echo").unwrap();
         let mut h = hatchling::hatch(agent, "introduce yourself in one line", perch.as_ref(), &self.cwd, &self.dirs)?;
-        let receipt = hatchling::wait(&mut h, "introduce yourself", perch.as_ref(), agent.max_steps, |_| {});
+        let receipt = hatchling::wait(&mut h, "introduce yourself", perch.as_ref(), agent, &self.cwd, |_| {});
         let receipt_path = roost::record(&self.dirs.roost(), &receipt)?;
         Ok(json!({
             "built": bot.name,
@@ -738,7 +741,8 @@ impl Shell {
                         &mut h,
                         &task,
                         perch.as_ref(),
-                        agent.max_steps,
+                        &agent,
+                        &cwd,
                         move |peep| run2.emit_peep(&name, peep),
                     );
                     r
@@ -1052,6 +1056,9 @@ impl Shell {
                                             permissions: Default::default(),
                                             skills: vec![],
                                             mcp: vec![],
+                                            budget: None,
+                                            routines: Vec::new(),
+                                            egress: None,
                                             body: String::new(),
                                         },
                                         &task,
@@ -1076,6 +1083,9 @@ impl Shell {
                         permissions: Default::default(),
                         skills: vec![],
                         mcp: vec![],
+                        budget: None,
+                        routines: Vec::new(),
+                        egress: None,
                         body: String::new(),
                     };
                     run.finish(Receipt::spawn_failed(
@@ -1698,6 +1708,9 @@ fn route<'a>(
                 permissions: agent.permissions.clone(),
                 boss: agent.boss,
                 max_steps: agent.max_steps,
+                budget: agent.budget.clone(),
+                routines: agent.routines.clone(),
+                egress: agent.egress.clone(),
             });
             let dir = shell.dirs.home.join("shared").join(format!("{name}-bot"));
             let res = std::fs::create_dir_all(dir.join("agents"))

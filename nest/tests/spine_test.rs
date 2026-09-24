@@ -36,6 +36,9 @@ fn spec_with(name: &str, max_steps: Option<u32>) -> AgentSpec {
         permissions: BTreeMap::new(),
         skills: vec![],
         mcp: vec![],
+        budget: None,
+        routines: Vec::new(),
+        egress: None,
         body: String::new(),
     }
 }
@@ -50,7 +53,7 @@ fn echo_hatch_runs_to_done_and_leaves_a_receipt() {
     let mut h = hatchling::hatch(&agent, "say hi", &perch, cwd, &dirs).unwrap();
     let mut saw_spawned = false;
     let mut saw_output = false;
-    let receipt = hatchling::wait(&mut h, "say hi", &perch, None, |p| {
+    let receipt = hatchling::wait(&mut h, "say hi", &perch, &agent, cwd, |p| {
         saw_spawned |= matches!(p, Peep::Spawned { .. });
         saw_output |= matches!(p, Peep::Output { .. });
     });
@@ -70,7 +73,7 @@ fn fail_perch_records_failed() {
     let agent = spec_with("doomed", None);
     let perch = Fail;
     let mut h = hatchling::hatch(&agent, "try", &perch, tmp.path(), &dirs).unwrap();
-    let receipt = hatchling::wait(&mut h, "try", &perch, None, |_| {});
+    let receipt = hatchling::wait(&mut h, "try", &perch, &agent, tmp.path(), |_| {});
     assert_eq!(receipt.status, Status::Failed);
 }
 
@@ -109,7 +112,7 @@ fn step_budget_kills_the_run() {
     let perch = Stepper;
     let mut h = hatchling::hatch(&agent, "loop", &perch, tmp.path(), &dirs).unwrap();
     let mut budget_hit = false;
-    let receipt = hatchling::wait(&mut h, "loop", &perch, agent.max_steps, |p| {
+    let receipt = hatchling::wait(&mut h, "loop", &perch, &agent, tmp.path(), |p| {
         budget_hit |= matches!(p, Peep::BudgetExceeded { .. });
     });
     assert!(budget_hit);
@@ -145,7 +148,7 @@ fn brood_falls_back_when_first_candidate_fails() {
                 &echo
             };
             let mut h = hatchling::hatch(&target.agent, "t", perch, tmp.path(), &dirs).unwrap();
-            let r = hatchling::wait(&mut h, "t", perch, None, |_| {});
+            let r = hatchling::wait(&mut h, "t", perch, &target.agent, tmp.path(), |_| {});
             attempts.push((target.agent.name.clone(), r.status));
             if r.status == Status::Done {
                 winner = Some(r);
@@ -157,6 +160,41 @@ fn brood_falls_back_when_first_candidate_fails() {
     assert_eq!(receipt.agent, "backup");
     assert_eq!(attempts[0].1, Status::Failed);
     assert_eq!(attempts[1].1, Status::Done);
+}
+
+#[test]
+fn egress_none_fails_runs_that_phone_home() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
+    let mut agent = spec_with("offline", None);
+    agent.egress = Some("none".into());
+    let perch = Echo;
+    // echo stub prints the prompt back — smuggle a URL into the task
+    let mut h = hatchling::hatch(&agent, "fetch https://example.com now", &perch, tmp.path(), &dirs).unwrap();
+    let receipt = hatchling::wait(&mut h, "fetch", &perch, &agent, tmp.path(), |_| {});
+    assert_eq!(receipt.status, Status::Failed);
+    // same run without the egress lock succeeds
+    let plain = spec_with("online", None);
+    let mut h = hatchling::hatch(&plain, "fetch https://example.com now", &perch, tmp.path(), &dirs).unwrap();
+    let receipt = hatchling::wait(&mut h, "fetch", &perch, &plain, tmp.path(), |_| {});
+    assert_eq!(receipt.status, Status::Done);
+}
+
+#[test]
+fn subagent_spool_is_cleaned_up() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
+    let mut agent = spec_with("council-member", None);
+    agent.mode = Some(spoke_core::manifest::BotMode::Subagent);
+    let perch = Echo;
+    let mut h = hatchling::hatch(&agent, "deliberate", &perch, tmp.path(), &dirs).unwrap();
+    // plant spool litter the run should remove
+    let spool = tmp.path().join(".nest").join("spool").join(&h.id);
+    std::fs::create_dir_all(&spool).unwrap();
+    std::fs::write(spool.join("scratch.txt"), "notes").unwrap();
+    let receipt = hatchling::wait(&mut h, "deliberate", &perch, &agent, tmp.path(), |_| {});
+    assert_eq!(receipt.status, Status::Done);
+    assert!(!spool.exists(), "subagent spool must be cleaned");
 }
 
 #[test]

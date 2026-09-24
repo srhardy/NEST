@@ -186,6 +186,9 @@ fn nest_projection_renders_bots_and_automations() {
         permissions: Default::default(),
         boss: false,
         max_steps: None,
+        budget: None,
+        routines: Vec::new(),
+        egress: None,
     });
     manifest.automations.push(Automation {
         name: "morning-triage".to_string(),
@@ -269,6 +272,9 @@ fn manifest_validation_rejects_bad_bots_and_automations() {
         permissions: Default::default(),
         boss: false,
         max_steps: None,
+        budget: None,
+        routines: Vec::new(),
+        egress: None,
     });
     assert!(manifest.validate().is_err(), "uppercase name must fail");
 
@@ -348,6 +354,9 @@ fn nest_projection_renders_boss_routing_services_and_permissions() {
         permissions: Default::default(),
         boss: true,
         max_steps: None,
+        budget: None,
+        routines: Vec::new(),
+        egress: None,
     });
     manifest.bots.push(Bot {
         name: "debugger".to_string(),
@@ -369,6 +378,9 @@ fn nest_projection_renders_boss_routing_services_and_permissions() {
         .collect(),
         boss: false,
         max_steps: Some(30),
+        budget: None,
+        routines: Vec::new(),
+        egress: None,
     });
     manifest.routing.push(Route {
         patterns: vec!["debug".to_string(), "stack trace".to_string()],
@@ -407,6 +419,27 @@ fn nest_projection_renders_boss_routing_services_and_permissions() {
     assert!(dbg.contains("  \"bash\": ask"));
     assert!(dbg.contains("  \"read\": allow"));
 
+    // removing the debugger bot reaps its render (backed up, not stranded) —
+    // hand-written notes without the spoke header survive
+    fs::write(
+        project.path().join(".nest/agents/notes.md"),
+        "# hand-written\n\nmy own note\n",
+    )
+    .expect("hand note");
+    manifest.bots.retain(|b| b.name != "debugger");
+    let replan = harness.plan(&Ctx::new(home.path(), project.path(), &manifest));
+    let ops: Vec<&str> = replan.ops.iter().map(|o| o.kind()).collect();
+    assert!(ops.contains(&"rmdir"), "removal must plan a delete: {ops:?}");
+    let _ = apply::apply(&replan, home.path(), project.path(), 3).expect("reap");
+    assert!(!project.path().join(".nest/agents/debugger.md").exists(), "render reaped");
+    assert!(
+        project.path().join(".nest/agents/notes.md").exists(),
+        "hand-written notes survive"
+    );
+    // the backup store kept the reaped render
+    let backups = home.path().join(".spoke/backups");
+    assert!(backups.exists(), "backups dir missing");
+
     let routing = fs::read_to_string(project.path().join(".nest/routing.toml")).expect("read");
     assert!(routing.contains("[[route]]"));
     assert!(routing.contains("bot = \"debugger\""));
@@ -418,7 +451,11 @@ fn nest_projection_renders_boss_routing_services_and_permissions() {
     assert!(services.contains("port = 8765"));
     assert!(services.contains("health = \"/api/v1/stats/\""));
 
-    let second = apply::apply(&plan, home.path(), project.path(), 2).expect("second apply");
+    // idempotency against the CURRENT manifest (debugger already
+    // removed): re-plan, then a second apply must change nothing
+    let fresh = harness.plan(&Ctx::new(home.path(), project.path(), &manifest));
+    let _ = apply::apply(&fresh, home.path(), project.path(), 4).expect("settle");
+    let second = apply::apply(&fresh, home.path(), project.path(), 5).expect("second apply");
     assert!(
         second.iter().all(|c| !c.changed),
         "second apply must change nothing"

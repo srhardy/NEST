@@ -336,6 +336,9 @@ pub fn apply(plan: &Plan, home: &Path, base: &Path, unix_secs: u64) -> Result<Ve
                 if backup.exists() {
                     remove_path(&backup)?;
                 }
+                if let Some(parent) = backup.parent() {
+                    fs::create_dir_all(parent)?;
+                }
                 fs::rename(path, &backup).with_context(|| {
                     format!("moving {} into {}", path.display(), backup.display())
                 })?;

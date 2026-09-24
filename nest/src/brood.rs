@@ -122,7 +122,7 @@ impl Brood {
         for target in candidates {
             let agent = &target.agent;
             let receipt = match hatchling::hatch(agent, task, perch, cwd, dirs) {
-                Ok(mut h) => hatchling::wait(&mut h, task, perch, agent.max_steps, |peep| {
+                Ok(mut h) => hatchling::wait(&mut h, task, perch, agent, cwd, |peep| {
                     on_peep(&agent.name, peep)
                 }),
                 Err(e) => {
@@ -190,6 +190,9 @@ mod tests {
             permissions: BTreeMap::new(),
             skills: vec![],
             mcp: vec![],
+            budget: None,
+            routines: Vec::new(),
+            egress: None,
             body: String::new(),
         }
     }

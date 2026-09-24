@@ -119,13 +119,17 @@ pub fn hatch(
 }
 
 /// Drive a hatchling to completion. `on_peep` sees every event live
-/// (spawn → steps/output → terminal). Steps are counted; when they pass
-/// `max_steps` the child is killed and the run records `BudgetExceeded`.
+/// (spawn → steps/output → terminal). Steps are counted against the
+/// agent's `max_steps` budget; at the cap the child is killed and the
+/// run records `BudgetExceeded`. Subagent runs get a scoped spool dir
+/// (cwd/.nest/spool/<id>) that is removed before the receipt lands —
+/// council runs leave no litter.
 pub fn wait(
     hatchling: &mut Hatchling,
     task: &str,
     perch: &dyn Perch,
-    max_steps: Option<u32>,
+    agent: &AgentSpec,
+    cwd: &Path,
     mut on_peep: impl FnMut(&Peep),
 ) -> Receipt {
     let child = &mut hatchling.child;
@@ -179,7 +183,7 @@ pub fn wait(
                 }
                 _ => on_peep(&peep),
             }
-            if let Some(max) = max_steps {
+            if let Some(max) = agent.max_steps {
                 if steps >= max && !killed_budget {
                     killed_budget = true;
                     on_peep(&Peep::BudgetExceeded { steps: max });
@@ -192,8 +196,26 @@ pub fn wait(
 
     let exit = child.wait().ok();
     let code = exit.and_then(|s| s.code());
+    // a subagent's spool directory (if any) is cleaned up before the
+    // receipt lands — council runs leave no workspace litter
+    if agent.mode == Some(spoke_core::manifest::BotMode::Subagent) {
+        let spool = cwd.join(".nest").join("spool").join(&hatchling.id);
+        std::fs::remove_dir_all(&spool).ok();
+    }
     let status = if killed_budget {
         Status::BudgetExceeded
+    } else if agent
+        .egress
+        .as_deref()
+        .is_some_and(|e| e.eq_ignore_ascii_case("none"))
+        && tail.iter().any(|l| {
+            let l = l.to_lowercase();
+            l.contains("http://") || l.contains("https://")
+        })
+    {
+        // egress:none bots must not phone home — a URL in the output
+        // tail is treated as a policy breach, not a success
+        Status::Failed
     } else {
         match code {
             Some(0) => Status::Done,

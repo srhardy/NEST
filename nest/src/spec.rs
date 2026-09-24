@@ -29,12 +29,23 @@ pub struct AgentSpec {
     pub boss: bool,
     #[serde(default)]
     pub max_steps: Option<u32>,
+    /// Per-bot spend budget (preset or daily-NNNk) — surfaced to the
+    /// prompt so the harness stays inside it; unknown shapes warn.
+    #[serde(default)]
+    pub budget: Option<String>,
+    /// Automation names this bot owns (declared in the manifest).
+    #[serde(default)]
+    pub routines: Vec<String>,
     #[serde(default)]
     pub permissions: BTreeMap<String, ToolPolicy>,
     #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default)]
     pub mcp: Vec<String>,
+    /// Network egress policy (none | same-project | open) — prompt-only
+    /// on harnesses without an egress control; the render always states it.
+    #[serde(default)]
+    pub egress: Option<String>,
     /// The markdown body after the frontmatter — the persona.
     #[serde(skip)]
     pub body: String,
@@ -355,13 +366,16 @@ mod tests {
 
     #[test]
     fn parses_frontmatter_and_body() {
-        let text = "---\nname: doc-keeper\ntitle: \"Doc Keeper\"\njob: \"keep docs in sync\"\nmode: subagent\nboss: true\nmax_steps: 25\npermissions:\n  bash: ask\n  read: allow\nskills: [markdown-tools]\n---\n\n# Doc Keeper\n\nYou keep docs tidy.\n";
+        let text = "---\nname: doc-keeper\ntitle: \"Doc Keeper\"\njob: \"keep docs in sync\"\nmode: subagent\nboss: true\nmax_steps: 25\nbudget: daily-50k\nroutines: [morning-triage]\negress: same-project\npermissions:\n  bash: ask\n  read: allow\nskills: [markdown-tools]\n---\n\n# Doc Keeper\n\nYou keep docs tidy.\n";
         let spec = parse_agent_md(text).unwrap().unwrap();
         assert_eq!(spec.name, "doc-keeper");
         assert_eq!(spec.title(), "Doc Keeper");
         assert_eq!(spec.mode, Some(BotMode::Subagent));
         assert!(spec.boss);
         assert_eq!(spec.max_steps, Some(25));
+        assert_eq!(spec.budget.as_deref(), Some("daily-50k"));
+        assert_eq!(spec.routines, vec!["morning-triage".to_string()]);
+        assert_eq!(spec.egress.as_deref(), Some("same-project"));
         assert_eq!(spec.permissions["bash"], ToolPolicy::Ask);
         assert_eq!(spec.skills, vec!["markdown-tools".to_string()]);
         assert!(spec.body.contains("You keep docs tidy."));
