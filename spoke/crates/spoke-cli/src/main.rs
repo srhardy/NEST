@@ -1738,33 +1738,27 @@ mod tests {
     fn registry_validate_checks_all_local_package_payloads_without_fetching() {
         let home = tempfile::tempdir().unwrap();
         let registry = home.path().join(".spoke/registry");
-        let source_registry =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../nest-registry");
-        let source_registry = std::fs::canonicalize(source_registry).unwrap();
-        for name in ["starter-bots", "remotes", "bob-council"] {
-            let source = source_registry.join("pkg").join(name);
-            let destination = registry.join("pkg").join(name);
-            copy_registry_fixture(&source, &destination);
-        }
-        copy_registry_fixture(
-            &source_registry.join("index.toml"),
-            &registry.join("index.toml"),
-        );
+        let pack = registry.join("pkg/echo-pack");
+        std::fs::create_dir_all(pack.join("skills/mini-skill")).unwrap();
+        std::fs::create_dir_all(pack.join("agents")).unwrap();
+        std::fs::write(
+            pack.join("skills/mini-skill/SKILL.md"),
+            "---\nname: mini-skill\n---\n\ndoes little\n",
+        )
+        .unwrap();
+        std::fs::write(pack.join("agents/mini-bot.md"), "---\nname: mini-bot\njob: sit\n---\n").unwrap();
+        std::fs::write(
+            pack.join("package.toml"),
+            "name = \"echo-pack\"\nversion = \"0.1.0\"\ndescription = \"fixture\"\n\n[source]\npath = \".\"\n\n[[skills]]\nname = \"mini-skill\"\npath = \"skills/mini-skill\"\n\n[[agents]]\nname = \"mini-bot\"\npath = \"agents/mini-bot.md\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            registry.join("index.toml"),
+            "[[package]]\nname = \"echo-pack\"\nmanifest = \"pkg/echo-pack/package.toml\"\n",
+        )
+        .unwrap();
         registry_validate(home.path()).unwrap();
         assert!(!home.path().join(".spoke/packages").exists());
-    }
-
-    fn copy_registry_fixture(source: &Path, destination: &Path) {
-        if source.is_dir() {
-            std::fs::create_dir_all(destination).unwrap();
-            for entry in std::fs::read_dir(source).unwrap() {
-                let entry = entry.unwrap();
-                copy_registry_fixture(&entry.path(), &destination.join(entry.file_name()));
-            }
-        } else {
-            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
-            std::fs::copy(source, destination).unwrap();
-        }
     }
 
     #[test]
