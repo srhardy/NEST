@@ -189,7 +189,7 @@
           </div>
         </div>
         <div style="width:320px;flex-shrink:0">
-          <h3>preview — the file it writes</h3>
+          <h3>preview — spoke diff (manifest entry + rendered file)</h3>
           <pre id="iv-draft" style="margin-top:10px;background:var(--card);border:1px solid var(--edge);border-radius:12px;padding:14px;color:var(--text);font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap"></pre>
           <button class="pill" id="iv-build" style="display:none;margin-top:10px;padding:8px 18px">🐣 build it</button>
         </div>
@@ -583,7 +583,7 @@ async function startInterview() {
   $('#iv-log').innerHTML = '';
   const r = await api('/api/interview/start', {});
   state.session = r.session;
-  ivMsg('hello! I build bots. four questions and yours joins the roster.', 'bot');
+  ivMsg('hello! I build bots. eight questions and yours joins the roster via agent.toml.', 'bot');
   ivMsg(r.question, 'bot');
   switchPane('interview');
   $('#iv-input').focus();
@@ -604,7 +604,8 @@ async function ivSend() {
 async function ivBuild() {
   const r = await api('/api/interview/build', { session: state.session });
   if (r.error) { ivMsg('could not build: ' + r.error, 'bot'); return; }
-  toast(`${r.built} hatched — joined the roster`);
+  const td = r.test_drive ? ` — test-drive ${r.test_drive.status}` : '';
+  toast(`${r.built} hatched via agent.toml${td} — joined the roster`);
   state.interviewing = false;
   $('#iv-build').style.display = 'none';
   await refresh();

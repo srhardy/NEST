@@ -222,7 +222,8 @@ impl Harness for Nest {
 
 /// Bot -> `.nest/agents/<name>.md`: YAML frontmatter + persona body.
 /// Fully generated; the header comment says where the truth lives.
-fn render_bot_md(bot: &Bot) -> String {
+/// Public so the NEST shell's eggbot renders the same file Spoke does.
+pub fn render_bot_md(bot: &Bot) -> String {
     let title = bot.title.clone().unwrap_or_else(|| bot.name.clone());
     let mut out = String::from("---\n");
     out.push_str(&format!("name: {}\n", bot.name));

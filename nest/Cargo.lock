@@ -234,6 +234,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "spoke-adapters",
  "spoke-core",
  "tempfile",
  "tiny_http",
@@ -359,6 +360,18 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
+]
+
+[[package]]
+name = "spoke-adapters"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "spoke-core",
+ "toml",
+ "toml_edit",
 ]
 
 [[package]]

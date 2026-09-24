@@ -28,6 +28,9 @@ use crate::perch;
 use crate::roost;
 use crate::spec::{self, AgentSpec};
 
+use spoke_adapters::nest::render_bot_md;
+use spoke_core::manifest::{Bot, BotMode, Manifest, ToolPolicy};
+
 /// The embedded single-page app.
 const INDEX: &str = include_str!("web/index.html");
 /// The desktop-birdy page for the wrapper's float window.
@@ -75,9 +78,9 @@ impl Run {
 }
 
 /// One eggbot interview in flight — the walk-through that builds a bot.
-/// Deterministic Q&A (name → job → voice → permissions → preview); the
-/// draft card shows exactly the file that will be written, so building is
-/// never a surprise.
+/// Eight questions (name → job → voice → not-job → touch → skills →
+/// model → test-drive); the draft card shows exactly the rendered agent
+/// file Spoke would write, so building is never a surprise.
 #[derive(Default)]
 struct Interview {
     step: usize,
@@ -85,7 +88,12 @@ struct Interview {
     title: String,
     job: String,
     voice: String,
+    anti_jobs: String,
     profile: String,
+    skills: String,
+    model: String,
+    /// extra frontmatter the test-drive hatch used (imprint proof)
+    test_drove: bool,
 }
 
 /// Lowercase kebab name, starting with a letter — e.g. `bigbird`, `pr-reviewer`.
@@ -103,61 +111,146 @@ impl Interview {
             0 => "what should we call it? (one word, like pr-reviewer)",
             1 => "nice. what's its one job?",
             2 => "how should it talk? (friendly / precise / blunt — or describe it)",
-            3 => "what can it touch? (reader / writer / full)",
+            3 => "what is explicitly NOT its job? (one line, or 'none')",
+            4 => "what can it touch? (reader / writer / full)",
+            5 => "any skills it starts with? (comma names from ~/.nest/skills, or 'none')",
+            6 => "which model tier? (concise / balanced / full — or 'none')",
             _ => "preview looks right? say 'build it' (or change anything first)",
         }
     }
 
-    fn permissions(&self) -> BTreeMap<String, &'static str> {
+    fn permissions(&self) -> BTreeMap<String, ToolPolicy> {
         let mut p = BTreeMap::new();
         match self.profile.as_str() {
             "writer" => {
-                p.insert("read".into(), "allow");
-                p.insert("write".into(), "allow");
-                p.insert("edit".into(), "allow");
-                p.insert("bash".into(), "ask");
+                p.insert("read".into(), ToolPolicy::Allow);
+                p.insert("write".into(), ToolPolicy::Allow);
+                p.insert("edit".into(), ToolPolicy::Allow);
+                p.insert("bash".into(), ToolPolicy::Ask);
             }
             "full" => {
-                p.insert("read".into(), "allow");
-                p.insert("write".into(), "allow");
-                p.insert("edit".into(), "allow");
-                p.insert("bash".into(), "allow");
+                p.insert("read".into(), ToolPolicy::Allow);
+                p.insert("write".into(), ToolPolicy::Allow);
+                p.insert("edit".into(), ToolPolicy::Allow);
+                p.insert("bash".into(), ToolPolicy::Allow);
             }
             _ => {
-                p.insert("read".into(), "allow");
-                p.insert("write".into(), "deny");
-                p.insert("edit".into(), "deny");
-                p.insert("bash".into(), "deny");
+                p.insert("read".into(), ToolPolicy::Allow);
+                p.insert("write".into(), ToolPolicy::Deny);
+                p.insert("edit".into(), ToolPolicy::Deny);
+                p.insert("bash".into(), ToolPolicy::Deny);
             }
         }
         p
     }
 
-    /// The exact file content — the preview card renders this verbatim.
-    fn draft(&self) -> String {
-        let mut fm = String::new();
-        if !self.name.is_empty() {
-            fm.push_str(&format!("name: {}\n", self.name));
-        }
-        if !self.title.is_empty() {
-            fm.push_str(&format!("title: \"{}\"\n", self.title));
-        }
-        if !self.job.is_empty() {
-            fm.push_str(&format!("job: \"{}\"\n", self.job.replace('"', "'")));
-        }
-        let perms = self.permissions();
-        if !perms.is_empty() {
-            fm.push_str("permissions:\n");
-            for (tool, policy) in perms {
-                fm.push_str(&format!("  {tool}: {policy}\n"));
-            }
-        }
-        let body = if self.voice.is_empty() {
-            String::new()
+    fn skill_list(&self) -> Vec<String> {
+        self.skills
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s.to_lowercase() != "none")
+            .collect()
+    }
+
+    /// The manifest bot — the single truth `interview_build` appends to
+    /// `agent.toml`. Rendering goes through the same `render_bot_md` Spoke
+    /// uses, so the preview card and the file on disk can never disagree.
+    fn bot(&self) -> Bot {
+        let voice_line = if self.voice.is_empty() {
+            format!("You are {}.", self.name)
         } else {
             format!("You are {}. {}.", self.name, self.voice)
         };
-        format!("---\n{fm}---\n\n{body}\n")
+        let anti: Vec<String> = {
+            let a = self.anti_jobs.trim();
+            if a.is_empty() || a.eq_ignore_ascii_case("none") {
+                Vec::new()
+            } else {
+                vec![a.to_string()]
+            }
+        };
+        Bot {
+            name: self.name.clone(),
+            title: Some(self.title.clone()),
+            job: self.job.clone(),
+            voice: vec![voice_line],
+            anti_jobs: anti,
+            skills: self.skill_list(),
+            mcp: Vec::new(),
+            model: {
+                let m = self.model.trim().to_lowercase();
+                if ["concise", "balanced", "full"].contains(&m.as_str()) {
+                    Some(m)
+                } else {
+                    None
+                }
+            },
+            memory: Vec::new(),
+            mode: Some(BotMode::Primary),
+            permissions: self.permissions(),
+            boss: false,
+            max_steps: Some(30),
+        }
+    }
+
+    /// The exact file content — the Spoke render of `bot()`.
+    fn draft(&self) -> String {
+        render_bot_md(&self.bot())
+    }
+
+    /// A spoke-diff-style preview card: the manifest entry it will append
+    /// plus the rendered agent file. Persona + files + undo, not just text.
+    fn preview(&self) -> String {
+        let b = self.bot();
+        let mut card = String::from("agent.toml — will append:\n\n[[bots]]\n");
+        card.push_str(&format!("name = \"{}\"\n", b.name));
+        card.push_str(&format!(
+            "title = \"{}\"\n",
+            b.title.clone().unwrap_or_default()
+        ));
+        card.push_str(&format!("job = \"{}\"\n", b.job));
+        if !b.voice.is_empty() {
+            card.push_str(&format!("voice = [\"{}\"]\n", b.voice.join(" ")));
+        }
+        if !b.anti_jobs.is_empty() {
+            card.push_str(&format!(
+                "anti_jobs = [{}]\n",
+                b.anti_jobs
+                    .iter()
+                    .map(|a| format!("\"{a}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !b.skills.is_empty() {
+            card.push_str(&format!("skills = [{}]\n", b.skills.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", ")));
+        }
+        if let Some(m) = &b.model {
+            card.push_str(&format!("model = \"{m}\"\n"));
+        }
+        card.push_str("mode = \"primary\"\nmax_steps = 30\npermissions = { ");
+        card.push_str(
+            &b.permissions
+                .iter()
+                .map(|(t, p)| {
+                    let w = match p {
+                        ToolPolicy::Allow => "allow",
+                        ToolPolicy::Ask => "ask",
+                        ToolPolicy::Deny => "deny",
+                    };
+                    format!("{t} = \"{w}\"")
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        card.push_str(" }\n");
+        card.push_str("\nrenders .nest/agents/<name>.md via spoke sync:\n\n");
+        card.push_str(&self.draft());
+        card.push_str("\nundo: delete the [[bots]] entry + `spoke sync` (backups in ~/.spoke/backups/)");
+        if !self.test_drove {
+            card.push_str("\ntest-drive: pending — 'build it' runs the bot once (echo perch in tests)");
+        }
+        card
     }
 }
 
@@ -232,6 +325,8 @@ impl Shell {
         let Some(iv) = interviews.get_mut(&session) else {
             return json!({"error": "no such interview"});
         };
+        // NOTE: `iv` borrows `interviews` mutably — compute draft/question
+        // from `iv` itself, never via a second lookup (borrow checker).
         match iv.step {
             0 => {
                 let name = answer.to_lowercase().replace(' ', "-");
@@ -241,17 +336,20 @@ impl Shell {
                         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
                     && name.chars().next().is_some_and(|c| c.is_ascii_lowercase());
                 if !ok {
-                    return json!({"error": "names must be lowercase-kebab, e.g. pr-reviewer", "question": iv.question(), "draft": iv.draft()});
+                    let out = json!({"error": "names must be lowercase-kebab, e.g. pr-reviewer", "question": iv.question(), "draft": iv.preview()});
+                    return out;
                 }
                 if self.agents().0.iter().any(|a| a.name == name) {
-                    return json!({"error": format!("a bot named {name} already roosts here"), "question": iv.question(), "draft": iv.draft()});
+                    let out = json!({"error": format!("a bot named {name} already roosts here"), "question": iv.question(), "draft": iv.preview()});
+                    return out;
                 }
                 iv.name = name;
                 iv.title = answer.to_string();
             }
             1 => {
                 if answer.is_empty() {
-                    return json!({"error": "one job, in a sentence", "question": iv.question(), "draft": iv.draft()});
+                    let out = json!({"error": "one job, in a sentence", "question": iv.question(), "draft": iv.preview()});
+                    return out;
                 }
                 iv.job = answer.to_string();
             }
@@ -264,36 +362,187 @@ impl Shell {
                 };
             }
             3 => {
+                iv.anti_jobs = answer.to_string();
+            }
+            4 => {
                 iv.profile = match answer {
                     "writer" | "full" => answer.to_string(),
                     _ => "reader".to_string(),
                 };
             }
-            4 => {
+            5 => {
+                iv.skills = answer.to_string();
+            }
+            6 => {
+                iv.model = match answer.to_lowercase().as_str() {
+                    "concise" | "balanced" | "full" => answer.to_lowercase(),
+                    _ => String::new(),
+                };
+            }
+            7 => {
                 if answer == "build it" || answer == "build" || answer == "yes" {
-                    return json!({"done": true, "draft": iv.draft()});
+                    let out = json!({"done": true, "draft": iv.preview()});
+                    return out;
                 }
                 // anything else restarts the loop on that topic — keep it simple: re-ask
-                return json!({"question": "almost — say 'build it' when the preview looks right", "draft": iv.draft()});
+                let out = json!({"question": "almost — say 'build it' when the preview looks right", "draft": iv.preview()});
+                return out;
             }
             _ => {}
         }
         iv.step += 1;
-        json!({"question": iv.question(), "draft": iv.draft(), "done": false})
+        let out = json!({"question": iv.question(), "draft": iv.preview(), "done": false});
+        out
     }
 
-    fn interview_build(&self, session: u64) -> Result<String> {
+    /// Where eggbot writes new bots: the project's agent.toml when the cwd
+    /// has one, else the personal home. Manifest-first — the rendered
+    /// .nest/agents/<name>.md follows via a Spoke sync of the nest harness.
+    fn interview_manifest_dir(&self) -> PathBuf {
+        if self.cwd.join("agent.toml").is_file() {
+            self.cwd.clone()
+        } else {
+            self.dirs.home.clone()
+        }
+    }
+
+    fn interview_build(&self, session: u64) -> Result<Value> {
         let iv = self
             .interviews
             .lock()
             .unwrap()
             .remove(&session)
             .context("no such interview")?;
-        let dir = self.dirs.home.join("agents");
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{}.md", iv.name));
-        std::fs::write(&path, iv.draft())?;
-        Ok(iv.name)
+        let bot = iv.bot();
+        bot.validate().context("interview produced an invalid bot")?;
+        let project = self.interview_manifest_dir();
+        let manifest_path = project.join(spoke_core::manifest::MANIFEST_FILE);
+        // load or seed a manifest — never clobber comments, append raw TOML
+        let mut manifest = if manifest_path.is_file() {
+            Manifest::load(&project).context("reading agent.toml")?
+        } else {
+            Manifest::default()
+        };
+        if manifest.bots.iter().any(|b| b.name == bot.name) {
+            anyhow::bail!("bot '{}' is already declared in {}", bot.name, manifest_path.display());
+        }
+        if !manifest_path.is_file() {
+            std::fs::write(&manifest_path, Manifest::template())
+                .with_context(|| format!("seeding {}", manifest_path.display()))?;
+            manifest = Manifest::load(&project).context("reading seeded agent.toml")?;
+        }
+        let mut body = std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("reading {}", manifest_path.display()))?;
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str("\n[[bots]]\n");
+        body.push_str(&format!("name = \"{}\"\n", bot.name.replace('"', "")));
+        if let Some(title) = &bot.title {
+            body.push_str(&format!("title = \"{}\"\n", title.replace('"', "'")));
+        }
+        body.push_str(&format!("job = \"{}\"\n", bot.job.replace('"', "'")));
+        if !bot.voice.is_empty() {
+            body.push_str(&format!(
+                "voice = [{}]\n",
+                bot.voice
+                    .iter()
+                    .map(|v| format!("\"{}\"", v.replace('"', "'")))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !bot.anti_jobs.is_empty() {
+            body.push_str(&format!(
+                "anti_jobs = [{}]\n",
+                bot.anti_jobs
+                    .iter()
+                    .map(|a| format!("\"{}\"", a.replace('"', "'")))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !bot.skills.is_empty() {
+            body.push_str(&format!(
+                "skills = [{}]\n",
+                bot.skills
+                    .iter()
+                    .map(|s| format!("\"{s}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if let Some(m) = &bot.model {
+            body.push_str(&format!("model = \"{m}\"\n"));
+        }
+        body.push_str("mode = \"primary\"\nmax_steps = 30\npermissions = { ");
+        body.push_str(
+            &bot.permissions
+                .iter()
+                .map(|(t, p)| {
+                    let w = match p {
+                        ToolPolicy::Allow => "allow",
+                        ToolPolicy::Ask => "ask",
+                        ToolPolicy::Deny => "deny",
+                    };
+                    format!("{t} = \"{w}\"")
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        body.push_str(" }\n");
+        std::fs::write(&manifest_path, &body)
+            .with_context(|| format!("writing {}", manifest_path.display()))?;
+        // validate the merged manifest before rendering
+        let manifest = Manifest::load(&project).context("re-reading agent.toml")?;
+        manifest.validate().context("merged agent.toml is invalid")?;
+        // render via the nest adapter with backups — same path as `spoke sync`
+        let harness = spoke_adapters::nest::Nest;
+        let ctx = spoke_adapters::Ctx::new(&self.dirs.home, &project, &manifest);
+        let plan = spoke_adapters::Harness::plan(&harness, &ctx);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let changes = spoke_adapters::apply::apply(&plan, &self.dirs.home, &project, now)
+            .context("rendering .nest/ from agent.toml")?;
+        let mut rendered: Vec<String> = changes
+            .iter()
+            .filter(|c| c.changed)
+            .map(|c| c.path.display().to_string())
+            .collect();
+        // personal bots live flat in home/agents/ (the engine's personal
+        // dir), not under the adapter's project .nest/ — write the same
+        // Spoke render there too so the roster picks it up
+        if project == self.dirs.home {
+            let dir = self.dirs.home.join("agents");
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join(format!("{}.md", bot.name));
+            std::fs::write(&path, render_bot_md(&bot))?;
+            rendered.push(path.display().to_string());
+        }
+        // a bot that hasn't run isn't done — hatch it once on the echo
+        // stub and record the receipt. Echo is always available, so the
+        // interview can never fail for lack of a paid CLI on PATH.
+        let home_dirs = NestDirs::resolve(&self.cwd, Some(self.dirs.home.clone()));
+        let agents = spec::load_agents(&home_dirs.agent_dirs())?;
+        let agent = agents
+            .iter()
+            .find(|a| a.name == bot.name)
+            .context("rendered bot not found in roster")?;
+        let perch = perch::perch_named("echo").unwrap();
+        let mut h = hatchling::hatch(agent, "introduce yourself in one line", perch.as_ref(), &self.cwd, &self.dirs)?;
+        let receipt = hatchling::wait(&mut h, "introduce yourself", perch.as_ref(), agent.max_steps, |_| {});
+        let receipt_path = roost::record(&self.dirs.roost(), &receipt)?;
+        Ok(json!({
+            "built": bot.name,
+            "manifest": manifest_path.display().to_string(),
+            "rendered": rendered,
+            "test_drive": {
+                "status": format!("{:?}", receipt.status),
+                "receipt": receipt_path.display().to_string(),
+            },
+        }))
     }
 
     fn next_order(&self) -> u64 {
@@ -303,9 +552,11 @@ impl Shell {
     }
 
     /// The roster plus any agent files that failed to parse — one bad
-    /// file never empties the sidebar.
+    /// file never empties the sidebar. Re-resolved per call so a `.nest/`
+    /// created mid-run (eggbot's first render) shows up immediately.
     fn agents(&self) -> (Vec<AgentSpec>, Vec<String>) {
-        spec::load_agents_lenient(&self.dirs.agent_dirs())
+        let dirs = NestDirs::resolve(&self.cwd, Some(self.dirs.home.clone()));
+        spec::load_agents_lenient(&dirs.agent_dirs())
     }
 
     fn register_run(&self, run: Arc<Run>) {
@@ -1251,7 +1502,7 @@ fn route<'a>(
             let body = read_body(request);
             let v: Value = serde_json::from_str(&body).unwrap_or_default();
             match shell.interview_build(v["session"].as_u64().unwrap_or_default()) {
-                Ok(name) => json_response(json!({"built": name})),
+                Ok(out) => json_response(out),
                 Err(e) => json_response(json!({"error": format!("{e:#}")})),
             }
         }

@@ -14,6 +14,7 @@ toml = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
 tiny_http = "0.12"
 spoke-core = { path = "../spoke/crates/spoke-core" }
+spoke-adapters = { path = "../spoke/crates/spoke-adapters" }
 
 [dev-dependencies]
 tempfile = "3"

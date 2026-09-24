@@ -142,8 +142,12 @@ fn eggbot_interview_builds_a_bot() {
     answer("pr-reviewer");
     answer("reviews pull requests");
     answer("precise");
+    answer("does not deploy anything");
     let r = answer("reader");
     assert!(r.contains("permissions"), "draft missing perms: {r}");
+    answer("none");
+    let r = answer("balanced");
+    assert!(r.contains("agent.toml"), "preview missing manifest card: {r}");
     let done = answer("build it");
     assert!(done.contains("\"done\":true"), "{done}");
 
@@ -154,12 +158,21 @@ fn eggbot_interview_builds_a_bot() {
         Some(&format!(r#"{{"session":{session}}}"#)),
     ));
     assert!(built.contains("pr-reviewer"), "{built}");
+    assert!(built.contains("test_drive"), "no test-drive proof: {built}");
 
-    // the new bot is on disk, in manifest format the engine loads
-    let file = home.join("agents/pr-reviewer.md");
-    let text = std::fs::read_to_string(&file).unwrap();
+    // the new bot is declared in agent.toml (manifest-first)…
+    // (cwd has no agent.toml here, so the personal home manifest is used)
+    let manifest = std::fs::read_to_string(home.join("agent.toml")).unwrap();
     assert!(
-        text.contains("name: pr-reviewer") && text.contains("read: allow"),
+        manifest.contains("name = \"pr-reviewer\"") && manifest.contains("anti_jobs"),
+        "{manifest}"
+    );
+    // …and rendered flat into home/agents/ by the spoke sync path
+    let file = home.join("agents/pr-reviewer.md");
+    let text = std::fs::read_to_string(&file)
+        .unwrap_or_else(|e| panic!("rendered bot missing at {}: {e}", file.display()));
+    assert!(
+        text.contains("name: pr-reviewer") && text.contains("read"),
         "{text}"
     );
 

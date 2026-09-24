@@ -9,7 +9,7 @@ Built on top of **[Spoke](https://github.com/srhardy/spoke)** — the config/pac
 ## Why NEST is awesome
 
 ### You don't need to know anything to start
-Open NEST and **eggbot** walks you through building your first bot with four questions — name, job, personality, what it can touch — then shows you exactly what it will write before a single file is saved.
+Open NEST and **eggbot** walks you through building your first bot with eight questions — name, job, personality, not-job, what it can touch, skills, model tier — then shows you the spoke diff (manifest entry + rendered file) before a single file is saved, and test-drives the bot once (a bot that hasn't run isn't done).
 
 ### Bots are characters, not config files
 Your roster is a living cast of animated birds on a black canvas — each bot gets its own color, flaps while it works, and tells you when it succeeds or fails. A **watch-it-think** stream shows what your bot is doing as it does it. Dark mode with three themes: fluro, monochrome, and full-color cast.
@@ -41,7 +41,7 @@ nest feather <run-id>   # distill that run into a reusable skill
 nest daemon             # remotes + schedules keep working while you sleep
 ```
 
-Inside the shell: **Roster** (your cast) · **Chat** (ask the nest or a specific bot) · **+ bot** (eggbot's four-question walkthrough) · **Activity** (every run, every receipt) · **Settings** (themes, engines, providers, routines — one readable file).
+Inside the shell: **Roster** (your cast) · **Chat** (ask the nest or a specific bot) · **+ bot** (eggbot's eight-question walkthrough through agent.toml) · **Activity** (every run, every receipt) · **Settings** (themes, engines, providers, routines — one readable file).
 
 ## What's inside
 
