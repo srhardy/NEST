@@ -181,7 +181,11 @@ fn hash_head(head: &str) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     // reserve u64::MAX for the unseen baseline
-    if h == u64::MAX { h - 1 } else { h }
+    if h == u64::MAX {
+        h - 1
+    } else {
+        h
+    }
 }
 
 /// Current HEAD commit of the repo at `root`, via `git rev-parse`.
@@ -291,7 +295,8 @@ impl Duty {
 
     /// Manual firing stamps the duty so its "last fired" is honest.
     pub fn stamp(&self, now: u64) {
-        self.last_fired.store(now, std::sync::atomic::Ordering::SeqCst);
+        self.last_fired
+            .store(now, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// For the UI: what kind of trigger this is waiting on.
@@ -311,13 +316,19 @@ impl Duty {
     /// How this duty runs when it fires: `action: brood` forces the
     /// council; otherwise a named bot hatches, brood covers the rest.
     pub fn wants_brood(&self) -> bool {
-        self.spec.action.as_deref().is_some_and(|a| a.eq_ignore_ascii_case("brood"))
+        self.spec
+            .action
+            .as_deref()
+            .is_some_and(|a| a.eq_ignore_ascii_case("brood"))
             || self.spec.bot.is_none()
     }
 
     /// Remote-triggered runs with `reply: quiet` skip the outbox write.
     pub fn quiet(&self) -> bool {
-        self.spec.reply.as_deref().is_some_and(|r| r.eq_ignore_ascii_case("quiet"))
+        self.spec
+            .reply
+            .as_deref()
+            .is_some_and(|r| r.eq_ignore_ascii_case("quiet"))
     }
 }
 
@@ -478,7 +489,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("events")).unwrap();
         std::fs::write(dir.path().join("events/deploy.ping"), "go").unwrap();
         assert!(d.due(now()), "ping file fires");
-        assert!(!dir.path().join("events/deploy.ping").exists(), "ping consumed");
+        assert!(
+            !dir.path().join("events/deploy.ping").exists(),
+            "ping consumed"
+        );
         assert!(!d.due(now()), "consumed ping doesn't refire");
         s.event = Some("git-push".into());
         let d = Duty::new(s, dir.path(), dir.path());

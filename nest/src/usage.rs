@@ -327,7 +327,11 @@ mod tests {
         assert!(counter_file(home.path(), "../../etc/evil")
             .to_string_lossy()
             .contains("usage"));
-        assert!(home.path().join("usage").join("..%2F..%2Fetc%2Fevil.json").exists());
+        assert!(home
+            .path()
+            .join("usage")
+            .join("..%2F..%2Fetc%2Fevil.json")
+            .exists());
     }
 
     #[test]

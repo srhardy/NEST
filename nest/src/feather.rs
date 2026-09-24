@@ -113,7 +113,7 @@ pub fn list_skills(dirs: &NestDirs) -> Vec<SkillInfo> {
             },
         ));
     }
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.sort_by_key(|a| std::cmp::Reverse(a.0));
     out.into_iter().map(|(_, s)| s).collect()
 }
 
@@ -125,6 +125,7 @@ pub fn record_learned_skill(dirs: &NestDirs, skill: &str, agent: &str, run: &str
         name: format!("skill:{skill}"),
         source: Some(format!("feathered by {agent} from run {run}")),
         version: None,
+        resolved_revision: None,
         license: None,
         integrity: None,
         tokens: 0,
@@ -341,7 +342,10 @@ mod tests {
         easy.status = crate::hatchling::Status::Done;
         assert!(!auto_feather_due(&dirs, &easy), "off by default");
         std::fs::write(dirs.home.join("settings.md"), "auto_feather: true\n").unwrap();
-        assert!(!auto_feather_due(&dirs, &easy), "easy Done runs never qualify");
+        assert!(
+            !auto_feather_due(&dirs, &easy),
+            "easy Done runs never qualify"
+        );
         let mut hard = receipt("run-hard");
         hard.status = crate::hatchling::Status::Done;
         hard.hard_won = true;

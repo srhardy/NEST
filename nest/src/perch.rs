@@ -124,7 +124,9 @@ pub fn build_prompt(agent: &AgentSpec, task: &str, dirs: &NestDirs) -> String {
         prompt.push_str(&format!("\n## Network\n\n- egress: {egress} — {note}\n"));
     }
     if let Some(budget) = agent.budget.as_deref() {
-        prompt.push_str(&format!("\n## Budget\n\n- budget: {budget} — stay inside it\n"));
+        prompt.push_str(&format!(
+            "\n## Budget\n\n- budget: {budget} — stay inside it\n"
+        ));
     }
     if !agent.routines.is_empty() {
         prompt.push_str("\n## Routines\n\n");
@@ -233,11 +235,9 @@ impl Perch for Codex {
         "codex"
     }
     fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
-        // Codex has no per-tool flags — only the two global dials. A write-ish
-        // tool that is asked-or-denied drops the run to `read-only`; approval
-        // is always `never` (stdin is null headless — nothing can answer a
-        // prompt, so failures go back to the model). Anything finer stays
-        // prompt-only via `build_prompt`'s Tool policy section.
+        // Codex has only global sandbox/approval controls. Since NEST runs
+        // headlessly and cannot answer approvals, writes are disabled unless
+        // every write-capable tool is explicitly allowed.
         const WRITE_TOOLS: [&str; 8] = [
             "write",
             "edit",
@@ -248,14 +248,15 @@ impl Perch for Codex {
             "patch",
             "powershell",
         ];
-        let locked_down = agent.permissions.iter().any(|(tool, policy)| {
-            matches!(policy, ToolPolicy::Ask | ToolPolicy::Deny)
-                && WRITE_TOOLS.contains(&tool.to_lowercase().as_str())
+        let explicitly_allows_writes = WRITE_TOOLS.iter().all(|write_tool| {
+            agent.permissions.iter().any(|(tool, policy)| {
+                tool.eq_ignore_ascii_case(write_tool) && *policy == ToolPolicy::Allow
+            })
         });
-        let sandbox = if locked_down {
-            "read-only"
-        } else {
+        let sandbox = if explicitly_allows_writes {
             "workspace-write"
+        } else {
+            "read-only"
         };
         Launch {
             program: "codex".into(),
@@ -603,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_launch_defaults_to_workspace_write_and_never_ask() {
+    fn codex_launch_defaults_to_read_only_and_never_ask() {
         let agent = spec(&[]);
         let dirs = NestDirs::resolve(
             &PathBuf::from("/"),
@@ -611,19 +612,56 @@ mod tests {
         );
         let launch = Codex.launch(&agent, "task", &dirs);
         let joined = launch.args.join(" ");
-        assert!(joined.contains("--sandbox workspace-write"));
+        assert!(joined.contains("--sandbox read-only"));
         assert!(joined.contains("--ask-for-approval never"));
     }
 
     #[test]
-    fn codex_launch_locks_down_on_denied_write_tools() {
-        let agent = spec(&[("Write", ToolPolicy::Deny)]);
+    fn codex_requires_explicit_write_grant_and_honors_denials() {
         let dirs = NestDirs::resolve(
             &PathBuf::from("/"),
             Some(tempfile::tempdir().unwrap().path().to_path_buf()),
         );
-        let launch = Codex.launch(&agent, "task", &dirs);
-        assert!(launch.args.join(" ").contains("--sandbox read-only"));
+        let partial = spec(&[("write", ToolPolicy::Allow)]);
+        assert!(Codex
+            .launch(&partial, "task", &dirs)
+            .args
+            .join(" ")
+            .contains("--sandbox read-only"));
+
+        let all_write_tools_allowed = [
+            "write",
+            "edit",
+            "bash",
+            "shell",
+            "exec",
+            "apply",
+            "patch",
+            "powershell",
+        ]
+        .into_iter()
+        .map(|tool| (tool, ToolPolicy::Allow))
+        .collect::<Vec<_>>();
+        let granted = spec(&all_write_tools_allowed);
+        assert!(Codex
+            .launch(&granted, "task", &dirs)
+            .args
+            .join(" ")
+            .contains("--sandbox workspace-write"));
+
+        let denied = spec(&[("write", ToolPolicy::Allow), ("bash", ToolPolicy::Deny)]);
+        assert!(Codex
+            .launch(&denied, "task", &dirs)
+            .args
+            .join(" ")
+            .contains("--sandbox read-only"));
+
+        let only_read = spec(&[("read", ToolPolicy::Allow)]);
+        assert!(Codex
+            .launch(&only_read, "task", &dirs)
+            .args
+            .join(" ")
+            .contains("--sandbox read-only"));
     }
 
     #[test]
@@ -638,10 +676,8 @@ mod tests {
             Some(tempfile::tempdir().unwrap().path().to_path_buf()),
         );
         let launch = OpenCode.launch(&agent, "task", &dirs);
-        let perm: serde_json::Value = serde_json::from_str(
-            launch.env.get("OPENCODE_PERMISSION").unwrap(),
-        )
-        .unwrap();
+        let perm: serde_json::Value =
+            serde_json::from_str(launch.env.get("OPENCODE_PERMISSION").unwrap()).unwrap();
         assert_eq!(perm["bash"], "allow");
         assert_eq!(perm["edit"], "deny");
     }

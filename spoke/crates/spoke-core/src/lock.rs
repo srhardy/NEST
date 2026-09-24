@@ -30,6 +30,8 @@ pub struct LockedPackage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integrity: Option<String>,
@@ -64,7 +66,33 @@ impl Lock {
         let path = project.join(LOCK_FILE);
         let mut body = serde_json::to_string_pretty(self).context("serializing lockfile")?;
         body.push('\n');
-        std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
+        let nonce = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let tmp = project.join(format!(".{LOCK_FILE}.{nonce}.tmp"));
+        std::fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
+        if path.exists() {
+            let previous = project.join(format!(".{LOCK_FILE}.{nonce}.previous"));
+            std::fs::rename(&path, &previous)
+                .with_context(|| format!("staging previous lock {}", path.display()))?;
+            if let Err(error) = std::fs::rename(&tmp, &path) {
+                let _ = std::fs::rename(&previous, &path);
+                return Err(error).with_context(|| format!("replacing {}", path.display()));
+            }
+            if let Err(error) = std::fs::remove_file(&previous) {
+                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::rename(&previous, &path);
+                return Err(error).with_context(|| format!("removing {}", previous.display()));
+            }
+        } else {
+            std::fs::rename(&tmp, &path)
+                .with_context(|| format!("installing {}", path.display()))?;
+        }
         Ok(path)
     }
 

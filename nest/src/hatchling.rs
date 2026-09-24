@@ -204,18 +204,6 @@ pub fn wait(
     }
     let status = if killed_budget {
         Status::BudgetExceeded
-    } else if agent
-        .egress
-        .as_deref()
-        .is_some_and(|e| e.eq_ignore_ascii_case("none"))
-        && tail.iter().any(|l| {
-            let l = l.to_lowercase();
-            l.contains("http://") || l.contains("https://")
-        })
-    {
-        // egress:none bots must not phone home — a URL in the output
-        // tail is treated as a policy breach, not a success
-        Status::Failed
     } else {
         match code {
             Some(0) => Status::Done,

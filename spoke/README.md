@@ -34,6 +34,7 @@ docs/                   ABOUT · MANIFEST · ADAPTER-CONTRACT · HARNESS-MATRIX 
 - **Warn, don't silently drop.** If a harness cannot express something, it appears in
   `spoke doctor` / `spoke sync` warnings.
 - **Idempotent.** Applying twice changes nothing the second time.
+- **Package provenance.** `agent.lock` records each Git package's resolved 40-character commit ID plus a content integrity hash. `spoke add` still resolves the supplied package spec; lock-driven reinstall/update is not implemented yet.
 
 ## Usage
 

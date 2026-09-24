@@ -95,7 +95,11 @@ impl Harness for Nest {
                 if !name.ends_with(".md") {
                     continue;
                 }
-                let declared = ctx.manifest.bots.iter().any(|b| format!("{}.md", b.name) == name);
+                let declared = ctx
+                    .manifest
+                    .bots
+                    .iter()
+                    .any(|b| format!("{}.md", b.name) == name);
                 if declared {
                     continue;
                 }

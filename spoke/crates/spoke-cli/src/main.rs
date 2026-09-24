@@ -98,6 +98,8 @@ enum RegistryCommand {
     Sync { url: Option<String> },
     /// List the packages in the synced index
     Show,
+    /// Validate every index entry, package manifest, and declared payload
+    Validate,
 }
 
 #[derive(Subcommand)]
@@ -161,6 +163,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Registry { command } => match command {
             RegistryCommand::Sync { url } => registry_sync(&home, url.as_deref()),
             RegistryCommand::Show => registry_show(&home),
+            RegistryCommand::Validate => registry_validate(&home),
         },
     }
 }
@@ -521,6 +524,40 @@ fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
     let spec_path = materialize_spec(home, spec)?;
     let package = store.resolve(&spec_path.to_string_lossy())?;
     package.validate()?;
+    let locked = Lock::load(project)?;
+    if locked.get(&package.name).is_some() {
+        anyhow::bail!(
+            "package '{}' is already installed; remove it before replacing it",
+            package.name
+        );
+    }
+    let installed_names: BTreeSet<String> = locked
+        .packages
+        .iter()
+        .flat_map(|entry| entry.skills.iter().chain(&entry.agents))
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    let mut candidate_names = BTreeSet::new();
+    for name in package
+        .skills
+        .iter()
+        .map(|skill| &skill.name)
+        .chain(package.agents.iter().map(|agent| &agent.name))
+    {
+        let key = name.to_ascii_lowercase();
+        if !candidate_names.insert(key.clone()) {
+            anyhow::bail!(
+                "package '{}' declares conflicting skill/agent name '{name}'",
+                package.name
+            );
+        }
+        if installed_names.contains(&key) {
+            anyhow::bail!(
+                "package '{}' conflicts with already installed skill/agent '{name}'",
+                package.name
+            );
+        }
+    }
 
     println!(
         "Resolved {}@{} ({})",
@@ -646,28 +683,29 @@ fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
         anyhow::bail!("no enabled harness is installed on this machine — nothing to install into");
     }
 
+    let locked_package = LockedPackage {
+        name: package.name.clone(),
+        source: Some(materialized.source_description.clone()),
+        version: Some(package.version.clone()),
+        resolved_revision: resolved_git_revision(&materialized.dir, &package)?,
+        license: package.license.clone(),
+        integrity: Some(integrity.clone()),
+        tokens: total_tokens,
+        skills: skills.iter().map(|(name, _)| name.clone()).collect(),
+        agents: agents.iter().map(|(name, _)| name.clone()).collect(),
+        installed_paths: installed_paths.iter().cloned().collect(),
+    };
     let changes = if dry_run {
         spoke_adapters::apply::preview(&plan)?
     } else {
-        spoke_adapters::apply::apply(&plan, home, project, unix_secs())?
+        spoke_adapters::apply::apply_transaction(&plan, home, project, unix_secs(), || {
+            let mut lock = Lock::load(project)?;
+            lock.upsert(locked_package);
+            lock.save(project)?;
+            Ok(())
+        })?
     };
     let changed = changes.iter().filter(|c| c.changed).count();
-
-    if !dry_run {
-        let mut lock = Lock::load(project)?;
-        lock.upsert(LockedPackage {
-            name: package.name.clone(),
-            source: Some(materialized.source_description.clone()),
-            version: Some(package.version.clone()),
-            license: package.license.clone(),
-            integrity: Some(integrity.clone()),
-            tokens: total_tokens,
-            skills: skills.iter().map(|(name, _)| name.clone()).collect(),
-            agents: agents.iter().map(|(name, _)| name.clone()).collect(),
-            installed_paths: installed_paths.iter().cloned().collect(),
-        });
-        lock.save(project)?;
-    }
 
     println!(
         "  {} {} director(ies) into {} — {}",
@@ -694,6 +732,28 @@ fn add(home: &Path, project: &Path, spec: &str, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+fn resolved_git_revision(
+    materialized_dir: &Path,
+    package: &spoke_registry::package::PackageManifest,
+) -> Result<Option<String>> {
+    if package.source.git.is_none() {
+        return Ok(None);
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(materialized_dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .context("reading resolved Git package revision")?;
+    anyhow::ensure!(output.status.success(), "cannot resolve Git package HEAD");
+    let revision = String::from_utf8(output.stdout)?.trim().to_string();
+    anyhow::ensure!(
+        revision.len() == 40 && revision.chars().all(|c| c.is_ascii_hexdigit()),
+        "Git returned invalid commit id"
+    );
+    Ok(Some(revision))
+}
+
 fn remove(home: &Path, project: &Path, name: &str) -> Result<()> {
     let mut lock = Lock::load(project)?;
     let package = lock
@@ -701,19 +761,45 @@ fn remove(home: &Path, project: &Path, name: &str) -> Result<()> {
         .cloned()
         .ok_or_else(|| anyhow!("package '{name}' is not installed"))?;
 
-    let mut paths: BTreeSet<PathBuf> = package.installed_paths.iter().map(PathBuf::from).collect();
-    if let Ok(manifest) = Manifest::load(project) {
-        for id in &manifest.harnesses {
-            if let Some(harness) = find(id) {
-                for skill in &package.skills {
-                    paths.insert(harness.skills_root(home).join(skill));
-                }
-                for agent in &package.agents {
-                    paths.insert(harness.agents_root(home).join(agent));
+    spoke_registry::package::validate_component(&package.name, "locked package name")?;
+    for skill in &package.skills {
+        spoke_registry::package::validate_component(skill, "locked skill name")?;
+    }
+    for agent in &package.agents {
+        spoke_registry::package::validate_component(agent, "locked agent name")?;
+    }
+
+    let mut allowed = BTreeSet::new();
+    for harness in registry() {
+        for (root, entries) in [
+            (harness.skills_root(home), &package.skills),
+            (harness.agents_root(home), &package.agents),
+        ] {
+            for entry in entries {
+                allowed.insert(root.join(entry));
+            }
+        }
+    }
+    let stored: BTreeSet<PathBuf> = package.installed_paths.iter().map(PathBuf::from).collect();
+    if stored.is_empty() || stored.iter().any(|path| !allowed.contains(path)) {
+        anyhow::bail!("lockfile for '{name}' contains missing or unknown install paths");
+    }
+    for target in &stored {
+        for ancestor in target
+            .ancestors()
+            .take(target.components().count().saturating_sub(1))
+        {
+            if let Ok(metadata) = std::fs::symlink_metadata(ancestor) {
+                if metadata.file_type().is_symlink() {
+                    anyhow::bail!(
+                        "refusing removal through symlinked path {}",
+                        ancestor.display()
+                    );
                 }
             }
         }
     }
+    let paths = stored;
 
     let mut plan = Plan::default();
     for path in &paths {
@@ -723,11 +809,13 @@ fn remove(home: &Path, project: &Path, name: &str) -> Result<()> {
         });
     }
 
-    let changes = spoke_adapters::apply::apply(&plan, home, project, unix_secs())?;
+    let changes =
+        spoke_adapters::apply::apply_transaction(&plan, home, project, unix_secs(), || {
+            lock.remove(name);
+            lock.save(project)?;
+            Ok(())
+        })?;
     let removed = changes.iter().filter(|c| c.changed).count();
-
-    lock.remove(name);
-    lock.save(project)?;
 
     println!("Removed {name}: {removed} director(ies) moved to backups, lockfile updated");
     Ok(())
@@ -913,6 +1001,7 @@ fn registry_sync(home: &Path, url: Option<&str>) -> Result<()> {
     }
     let index = spoke_registry::package::Index::load(&store.index_path())
         .context("registry synced but has no readable index.toml")?;
+    index.validate()?;
     println!("{} package(s) in the index", index.packages.len());
     Ok(())
 }
@@ -927,6 +1016,60 @@ fn registry_show(home: &Path) -> Result<()> {
     for entry in &index.packages {
         println!("  {:<24} {}", entry.name, entry.manifest);
     }
+    Ok(())
+}
+
+fn registry_validate(home: &Path) -> Result<()> {
+    let store = Store::new(home);
+    let index_path = store.index_path();
+    let index = spoke_registry::package::Index::load(&index_path)
+        .context("no registry synced — run `spoke registry sync <git-url>` first")?;
+    index.validate()?;
+    let registry_root = std::fs::canonicalize(store.registry_dir())?;
+    for entry in &index.packages {
+        let mut manifest_path = registry_root.join(spoke_registry::package::safe_relative_path(
+            &entry.manifest,
+        )?);
+        manifest_path =
+            spoke_registry::package::ensure_contained(&registry_root, &manifest_path, true)?;
+        let mut package = spoke_registry::package::PackageManifest::load(&manifest_path)?;
+        anyhow::ensure!(
+            package.name == entry.name,
+            "index entry '{}' points to package '{}'",
+            entry.name,
+            package.name
+        );
+        package.validate()?;
+        let manifest_dir = manifest_path
+            .parent()
+            .context("registry manifest has no parent")?;
+        package.resolve_source_path(manifest_dir)?;
+        let source = package
+            .source
+            .path
+            .as_deref()
+            .context("registry validation only permits local package sources")?;
+        let source_root = Path::new(source);
+        let skills = store.skill_files(&package, source_root)?;
+        let agents = store.agent_files(&package, source_root)?;
+        anyhow::ensure!(
+            skills.len() == package.skills.len(),
+            "package '{}' has an unresolved skill payload",
+            entry.name
+        );
+        anyhow::ensure!(
+            agents.len() == package.agents.len(),
+            "package '{}' has an unresolved agent payload",
+            entry.name
+        );
+        println!(
+            "  valid {:<24} {} skill(s), {} agent(s)",
+            entry.name,
+            skills.len(),
+            agents.len()
+        );
+    }
+    println!("validated {} package(s)", index.packages.len());
     Ok(())
 }
 
@@ -1313,7 +1456,7 @@ mod tests {
             std::fs::create_dir_all(pkg.join("src")).unwrap();
             std::fs::write(
                 pkg.join("package.toml"),
-                format!("name = \"{name}\"\nversion = \"0.1.0\"\n\n[source]\npath = \"src\"\n"),
+                format!("name = \"{name}\"\nversion = \"0.1.0\"\n\n[source]\npath = \"src\"\n\n[[skills]]\nname = \"{name}-skill\"\npath = \".\"\n"),
             )
             .unwrap();
             std::fs::write(pkg.join("src/demo.txt"), "x").unwrap();
@@ -1352,6 +1495,149 @@ mod tests {
     }
 
     #[test]
+    fn remove_accepts_recorded_harness_path_and_moves_it_to_backup() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let install = home.path().join(".nest/skills/good-skill");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(install.join("SKILL.md"), "safe").unwrap();
+        let mut lock = Lock::default();
+        lock.upsert(LockedPackage {
+            name: "good-package".into(),
+            source: Some("path:test".into()),
+            version: Some("1.0".into()),
+            resolved_revision: None,
+            license: None,
+            integrity: None,
+            tokens: 1,
+            skills: vec!["good-skill".into()],
+            agents: vec![],
+            installed_paths: vec![install.to_string_lossy().to_string()],
+        });
+        lock.save(project.path()).unwrap();
+        std::fs::write(install.join("SKILL.md"), "user edits must survive").unwrap();
+
+        remove(home.path(), project.path(), "good-package").unwrap();
+        assert!(!install.exists());
+        assert!(Lock::load(project.path())
+            .unwrap()
+            .get("good-package")
+            .is_none());
+        let backup_root = paths::backups_dir(home.path(), unix_secs());
+        let backup = backup_root.join(paths::backup_file_name(&install, project.path()));
+        assert_eq!(
+            std::fs::read_to_string(backup.join("SKILL.md")).unwrap(),
+            "user edits must survive"
+        );
+    }
+
+    #[test]
+    fn remove_rolls_back_when_lock_commit_fails() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let install = home.path().join(".nest/skills/good-skill");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(install.join("SKILL.md"), "safe").unwrap();
+        let mut lock = Lock::default();
+        lock.upsert(LockedPackage {
+            name: "good-package".into(),
+            source: Some("path:test".into()),
+            version: Some("1.0".into()),
+            resolved_revision: None,
+            license: None,
+            integrity: None,
+            tokens: 1,
+            skills: vec!["good-skill".into()],
+            agents: vec![],
+            installed_paths: vec![install.to_string_lossy().to_string()],
+        });
+        lock.save(project.path()).unwrap();
+        let lock_path = project.path().join("agent.lock");
+        std::fs::remove_file(&lock_path).unwrap();
+        std::fs::create_dir(&lock_path).unwrap();
+        std::fs::write(lock_path.join("block"), "prevent lock save").unwrap();
+
+        assert!(remove(home.path(), project.path(), "good-package").is_err());
+        assert_eq!(std::fs::read(install.join("SKILL.md")).unwrap(), b"safe");
+        assert_eq!(
+            std::fs::read(lock_path.join("block")).unwrap(),
+            b"prevent lock save"
+        );
+    }
+
+    #[test]
+    fn remove_rejects_out_of_root_lock_paths_without_side_effects() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("keep.txt");
+        std::fs::write(&sentinel, "do not move").unwrap();
+        let mut lock = Lock::default();
+        lock.upsert(LockedPackage {
+            name: "evil-package".into(),
+            source: Some("path:test".into()),
+            version: Some("1.0".into()),
+            resolved_revision: None,
+            license: None,
+            integrity: None,
+            tokens: 0,
+            skills: vec!["safe-skill".into()],
+            agents: vec![],
+            installed_paths: vec![sentinel.to_string_lossy().to_string()],
+        });
+        lock.save(project.path()).unwrap();
+        let before = std::fs::read(project.path().join("agent.lock")).unwrap();
+
+        assert!(remove(home.path(), project.path(), "evil-package").is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"do not move");
+        assert_eq!(
+            std::fs::read(project.path().join("agent.lock")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn remove_refuses_symlinked_harness_root() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_skill = outside.path().join("good-skill");
+        std::fs::create_dir_all(&outside_skill).unwrap();
+        std::fs::write(outside_skill.join("SKILL.md"), "do not move").unwrap();
+        let nest_root = home.path().join(".nest");
+        std::fs::create_dir_all(&nest_root).unwrap();
+        let skills_link = nest_root.join("skills");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), &skills_link).unwrap();
+        #[cfg(windows)]
+        match std::os::windows::fs::symlink_dir(outside.path(), &skills_link) {
+            Ok(()) => {}
+            Err(e) if e.raw_os_error() == Some(1314) => return,
+            Err(e) => panic!("cannot create test symlink: {e}"),
+        }
+        let mut lock = Lock::default();
+        lock.upsert(LockedPackage {
+            name: "good-package".into(),
+            source: Some("path:test".into()),
+            version: Some("1.0".into()),
+            resolved_revision: None,
+            license: None,
+            integrity: None,
+            tokens: 1,
+            skills: vec!["good-skill".into()],
+            agents: vec![],
+            installed_paths: vec![skills_link.join("good-skill").to_string_lossy().to_string()],
+        });
+        lock.save(project.path()).unwrap();
+
+        assert!(remove(home.path(), project.path(), "good-package").is_err());
+        assert_eq!(
+            std::fs::read(outside_skill.join("SKILL.md")).unwrap(),
+            b"do not move"
+        );
+    }
+
+    #[test]
     fn registry_sync_clones_and_resolves() {
         let home = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
@@ -1372,7 +1658,7 @@ mod tests {
         std::fs::create_dir_all(pkg.join("src")).unwrap();
         std::fs::write(
             pkg.join("package.toml"),
-            "name = \"two\"\nversion = \"0.1.0\"\n\n[source]\npath = \"src\"\n",
+            "name = \"two\"\nversion = \"0.1.0\"\n\n[source]\npath = \"src\"\n\n[[skills]]\nname = \"two-skill\"\npath = \".\"\n",
         )
         .unwrap();
         std::fs::write(pkg.join("src/demo.txt"), "x").unwrap();
@@ -1393,6 +1679,50 @@ mod tests {
     }
 
     #[test]
+    fn registry_sync_rejects_unsafe_index_entries() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repo.path().join("index.toml"),
+            "[[package]]\nname = \"escape\"\nmanifest = \"../outside.toml\"\n",
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "add",
+                "index.toml",
+            ])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--quiet",
+                "-m",
+                "unsafe index",
+            ])
+            .status()
+            .unwrap();
+        let error = registry_sync(home.path(), Some(repo.path().to_str().unwrap())).unwrap_err();
+        assert!(error.to_string().contains("escapes"), "{error:#}");
+    }
+
+    #[test]
     fn registry_sync_rejects_a_non_git_dir() {
         let home = tempfile::tempdir().unwrap();
         let dir = home.path().join(".spoke/registry");
@@ -1405,6 +1735,39 @@ mod tests {
     }
 
     #[test]
+    fn registry_validate_checks_all_local_package_payloads_without_fetching() {
+        let home = tempfile::tempdir().unwrap();
+        let registry = home.path().join(".spoke/registry");
+        let source_registry =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../nest-registry");
+        let source_registry = std::fs::canonicalize(source_registry).unwrap();
+        for name in ["starter-bots", "remotes", "bob-council"] {
+            let source = source_registry.join("pkg").join(name);
+            let destination = registry.join("pkg").join(name);
+            copy_registry_fixture(&source, &destination);
+        }
+        copy_registry_fixture(
+            &source_registry.join("index.toml"),
+            &registry.join("index.toml"),
+        );
+        registry_validate(home.path()).unwrap();
+        assert!(!home.path().join(".spoke/packages").exists());
+    }
+
+    fn copy_registry_fixture(source: &Path, destination: &Path) {
+        if source.is_dir() {
+            std::fs::create_dir_all(destination).unwrap();
+            for entry in std::fs::read_dir(source).unwrap() {
+                let entry = entry.unwrap();
+                copy_registry_fixture(&entry.path(), &destination.join(entry.file_name()));
+            }
+        } else {
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(source, destination).unwrap();
+        }
+    }
+
+    #[test]
     fn registry_show_reads_the_index() {
         let home = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
@@ -1413,8 +1776,233 @@ mod tests {
         registry_show(home.path()).unwrap();
     }
 
+    #[test]
+    fn add_rejects_skill_name_collision_without_overwriting_first_package() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".nest")).unwrap();
+        std::fs::write(
+            project.path().join("agent.toml"),
+            "version = 1\nharnesses = [\"nest\"]\n",
+        )
+        .unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        for (dir, package_name, body) in [
+            (first.path(), "first-package", "first body"),
+            (second.path(), "second-package", "second body"),
+        ] {
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(
+                dir.join("package.toml"),
+                format!("name = \"{package_name}\"\nversion = \"1.0.0\"\n\n[source]\npath = \"src\"\n\n[[skills]]\nname = \"shared-skill\"\npath = \".\"\n"),
+            )
+            .unwrap();
+            std::fs::write(dir.join("src/SKILL.md"), body).unwrap();
+        }
+
+        add(
+            home.path(),
+            project.path(),
+            first.path().to_str().unwrap(),
+            false,
+        )
+        .unwrap();
+        let installed = home.path().join(".nest/skills/shared-skill/SKILL.md");
+        let before = std::fs::read(&installed).unwrap();
+        let lock_before = std::fs::read(project.path().join("agent.lock")).unwrap();
+        let error = add(
+            home.path(),
+            project.path(),
+            second.path().to_str().unwrap(),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("conflicts"), "{error:#}");
+        assert_eq!(std::fs::read(installed).unwrap(), before);
+        assert_eq!(
+            std::fs::read(project.path().join("agent.lock")).unwrap(),
+            lock_before
+        );
+        assert!(Lock::load(project.path())
+            .unwrap()
+            .get("second-package")
+            .is_none());
+    }
+
+    #[test]
+    fn add_rolls_back_installs_when_lock_commit_fails() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".nest")).unwrap();
+        std::fs::write(
+            project.path().join("agent.toml"),
+            "version = 1\nharnesses = [\"nest\"]\n",
+        )
+        .unwrap();
+        let lock_dir = project.path().join("agent.lock");
+        std::fs::create_dir_all(&lock_dir).unwrap();
+        std::fs::write(lock_dir.join("block"), "prevent lock commit").unwrap();
+        let pkg = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(pkg.path().join("src")).unwrap();
+        std::fs::write(
+            pkg.path().join("package.toml"),
+            "name = \"rollback-package\"\nversion = \"1.0.0\"\n\n[source]\npath = \"src\"\n\n[[skills]]\nname = \"rollback-skill\"\npath = \".\"\n",
+        )
+        .unwrap();
+        std::fs::write(pkg.path().join("src/SKILL.md"), "skill body").unwrap();
+
+        assert!(add(
+            home.path(),
+            project.path(),
+            pkg.path().to_str().unwrap(),
+            false
+        )
+        .is_err());
+        assert!(!home.path().join(".nest/skills/rollback-skill").exists());
+        assert!(lock_dir.join("block").is_file());
+    }
+
     /// The lockfile hash must cover the same files `spoke why` re-hashes
     /// from the store cache — otherwise every package reports DRIFT.
+    #[test]
+    fn git_branch_install_records_immutable_resolved_revision() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".nest")).unwrap();
+        std::fs::write(
+            project.path().join("agent.toml"),
+            "version = 1\nharnesses = [\"nest\"]\n",
+        )
+        .unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join("src")).unwrap();
+        std::fs::write(repo.path().join("src/SKILL.md"), "revision A").unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .arg(repo.path())
+            .status()
+            .unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        std::fs::write(
+            repo.path().join("package.toml"),
+            "name = \"moving-package\"\nversion = \"1.0.0\"\n\n[source]\npath = \".\"\n\n[[skills]]\nname = \"moving-skill\"\npath = \"src\"\n",
+        )
+        .unwrap();
+        git(&["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"]);
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "A",
+        ]);
+        let revision_a = String::from_utf8(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let package = PackageManifest {
+            name: "moving-package".into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            license: None,
+            tier: None,
+            source: spoke_registry::package::Source {
+                path: None,
+                git: Some(repo.path().to_string_lossy().to_string()),
+                rev: Some("main".into()),
+            },
+            skills: vec![spoke_registry::package::SkillSpec {
+                name: "moving-skill".into(),
+                path: "src".into(),
+            }],
+            agents: vec![],
+            requires: Default::default(),
+        };
+        let git_spec = home.path().join("git-package.toml");
+        std::fs::write(
+            &git_spec,
+            format!(
+                "name = \"{}\"\nversion = \"{}\"\n\n[source]\ngit = \"{}\"\nrev = \"main\"\n\n[[skills]]\nname = \"{}\"\npath = \"src\"\n",
+                package.name,
+                package.version,
+                repo.path().to_string_lossy().replace('\\', "/"),
+                package.skills[0].name
+            ),
+        )
+        .unwrap();
+        add(
+            home.path(),
+            project.path(),
+            git_spec.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
+        let locked = Lock::load(project.path())
+            .unwrap()
+            .get("moving-package")
+            .unwrap()
+            .clone();
+        std::fs::write(repo.path().join("src/SKILL.md"), "revision B").unwrap();
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "B",
+        ]);
+        let revision_b = String::from_utf8(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        assert_ne!(revision_a, revision_b);
+        assert_eq!(
+            locked.resolved_revision.as_deref(),
+            Some(revision_a.as_str())
+        );
+        let cache = Store::new(home.path())
+            .packages_dir()
+            .join("moving-package")
+            .join("1.0.0");
+        assert_eq!(
+            std::fs::read_to_string(cache.join("src/SKILL.md")).unwrap(),
+            "revision A"
+        );
+        assert_eq!(
+            locked.integrity.unwrap(),
+            Store::integrity(&spoke_registry::collect_files(&cache).unwrap())
+        );
+    }
+
     #[test]
     fn lockfile_integrity_covers_the_whole_cached_package() {
         let home = tempfile::tempdir().unwrap();
@@ -1437,7 +2025,13 @@ mod tests {
         .unwrap();
         std::fs::write(pkg.path().join("src/s/SKILL.md"), "x").unwrap();
 
-        add(home.path(), project.path(), pkg.path().to_str().unwrap(), false).unwrap();
+        add(
+            home.path(),
+            project.path(),
+            pkg.path().to_str().unwrap(),
+            false,
+        )
+        .unwrap();
 
         let lock = Lock::load(project.path()).unwrap();
         let locked = lock.get("p").unwrap().integrity.clone().unwrap();

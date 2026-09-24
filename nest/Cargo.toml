@@ -16,5 +16,8 @@ tiny_http = "0.12"
 spoke-core = { path = "../spoke/crates/spoke-core" }
 spoke-adapters = { path = "../spoke/crates/spoke-adapters" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 tempfile = "3"

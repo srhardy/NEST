@@ -172,6 +172,7 @@
       <div class="chatlog" id="chatlog"></div>
       <div class="loop" id="loop" style="padding:4px 22px"></div>
       <div class="chatin">
+        <button class="pill" id="new-chat" title="Start a separate conversation">new chat</button>
         <input id="task" placeholder="tell the nest what to do — the brood picks the right bot" autocomplete="off" aria-label="task">
         <button id="send">send</button>
       </div>
@@ -283,7 +284,7 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const birdSvg = () => document.getElementById('tpl-bird').content.cloneNode(true);
-const state = { agents: [], perches: [], chatBot: null, tab: 'chat', interviewing: false, session: null };
+const state = { agents: [], perches: [], chatBot: null, tab: 'chat', interviewing: false, session: null, chatSession: null };
 const PALETTE = ['#b98bff','#fb923c','#38bdf8','#f472b6','#2dd4bf','#a3e635','#facc15','#f87171'];
 
 async function api(path, body) {
@@ -308,7 +309,7 @@ function renderRoster() {
     info.innerHTML = `<div class="nm">${esc(a.name)}${a.boss ? ' ♛' : ''}</div><div class="jb">${esc(a.job||'')}</div>`;
     el.appendChild(info);
     const dot = document.createElement('span'); dot.className = 'dot'; el.appendChild(dot);
-    el.onclick = () => { state.chatBot = a.name; renderTabs(); renderChatHint(); switchPane('chat'); };
+    el.onclick = async () => { state.chatBot = a.name; await loadChatSession(a.name); renderTabs(); renderChatHint(); switchPane('chat'); };
     r.appendChild(el);
   }
   if (!state.agents.length) {
@@ -357,13 +358,13 @@ function switchPane(id) {
 }
 
 // per-bot run history: a built-on-demand pane listing the roost filtered
-// to one bot, newest first — resumable context without new backend state
+// to one bot, newest first; receipts are not resumable conversations.
 function showBotPane(name) {
   hideBotPane();
   const pane = document.createElement('div');
   pane.className = 'pane active';
   pane.id = 'pane-bot';
-  pane.innerHTML = `<div class="scroll"><h3 style="margin-bottom:12px">${esc(name)} — run history</h3>
+  pane.innerHTML = `<div class="scroll"><h3 style="margin-bottom:12px">${esc(name)} — run history (not resumable)</h3>
     <div style="margin-bottom:12px;display:flex;gap:8px"><button class="pill" id="bot-chat">💬 chat with ${esc(name)}</button>
     <button class="pill" id="bot-imprint">🐣 test-drive</button></div>
     <table class="runs"><thead><tr><th>run</th><th>status</th><th>steps</th><th>secs</th><th>task</th></tr></thead><tbody id="bot-runs"></tbody></table></div>`;
@@ -391,6 +392,28 @@ function renderChatHint() {
   $('#task').placeholder = state.chatBot
     ? `message ${state.chatBot} — hatched directly`
     : 'tell the nest what to do — the brood picks the right bot';
+}
+
+async function loadChatSession(bot) {
+  const key = bot || 'nest';
+  const listing = await api(`/api/sessions?bot=${encodeURIComponent(key)}`);
+  const session = (listing.sessions || [])[0];
+  state.chatSession = session ? session.id : null;
+  $('#chatlog').innerHTML = '';
+  $('#loop').innerHTML = '';
+  if (!session) return;
+  const loaded = await api(`/api/sessions/${encodeURIComponent(session.id)}`);
+  if (loaded.error) { toast('session could not be restored — ' + loaded.error); return; }
+  for (const message of loaded.session.messages || []) {
+    const element = addMsg(message.role === 'user' ? 'you' : (key === 'nest' ? 'the nest' : key), message.text || (message.state === 'running' ? 'run interrupted or still running' : ''), message.role === 'user' ? 'me' : 'bot');
+    if (message.role === 'assistant' && message.state === 'running') element.classList.add('thinking');
+  }
+}
+
+function newChatSession() {
+  state.chatSession = null;
+  $('#chatlog').innerHTML = '';
+  $('#loop').innerHTML = '';
 }
 
 function addMsg(who, text, cls = '') {
@@ -436,8 +459,9 @@ async function send() {
   addMsg('you', task, 'me');
   const thinking = addMsg(state.chatBot || 'the nest', '…', 'bot thinking');
   const loop = $('#loop'); loop.innerHTML = '';
-  const endpoint = state.chatBot ? '/api/hatch' : '/api/brood';
-  const { id, error } = await api(endpoint, { bot: state.chatBot, task });
+  const result = await api('/api/sessions/send', { bot: state.chatBot || 'nest', session: state.chatSession, task });
+  const { id, error } = result;
+  if (result.session) state.chatSession = result.session;
   if (error) { thinking.querySelector('.txt').textContent = 'could not hatch: ' + error; return; }
   const src = new EventSource(`/api/runs/${id}/events`);
   let lastBot = state.chatBot || 'the nest';
@@ -455,6 +479,7 @@ async function send() {
     src.close(); thinking.classList.remove('thinking'); refresh();
     const { receipt } = JSON.parse(e.data);
     if (receipt && receipt.hard_won) toast('hard-won run — feather it in activity 🪶');
+    loadChatSession(state.chatBot || 'nest');
   });
 }
 
@@ -654,6 +679,7 @@ document.querySelectorAll('.switch').forEach(sw => {
   };
 });
 $('#addbot').onclick = startInterview;
+$('#new-chat').onclick = newChatSession;
 
 function ivMsg(text, cls) {
   const m = document.createElement('div');
@@ -710,7 +736,7 @@ $('#send').onclick = send;
 $('#task').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 
 renderTabs(); renderChatHint(); applySavedTheme();
-refresh();
+refresh().then(() => loadChatSession(state.chatBot || 'nest'));
 setInterval(refresh, 3000);
 </script>
 </body>

@@ -147,7 +147,33 @@ fn eggbot_interview_builds_a_bot() {
     assert!(r.contains("permissions"), "draft missing perms: {r}");
     answer("none");
     let r = answer("balanced");
-    assert!(r.contains("agent.toml"), "preview missing manifest card: {r}");
+    assert!(r.contains("spoke diff"), "preview is not a Spoke diff: {r}");
+    assert!(
+        r.contains("agent.toml"),
+        "preview missing manifest path: {r}"
+    );
+    assert!(
+        r.contains(".nest/agents/"),
+        "preview missing rendered directory: {r}"
+    );
+    assert!(
+        r.contains("name: pr-reviewer"),
+        "preview missing rendered agent: {r}"
+    );
+    let premature = body(&http(
+        port,
+        "POST",
+        "/api/interview/build",
+        Some(&format!(r#"{{"session":{session}}}"#)),
+    ));
+    assert!(
+        premature.contains("confirmed"),
+        "unconfirmed build accepted: {premature}"
+    );
+    assert!(
+        !home.join("agent.toml").exists(),
+        "unconfirmed build wrote a manifest"
+    );
     let done = answer("build it");
     assert!(done.contains("\"done\":true"), "{done}");
 
@@ -157,8 +183,15 @@ fn eggbot_interview_builds_a_bot() {
         "/api/interview/build",
         Some(&format!(r#"{{"session":{session}}}"#)),
     ));
-    assert!(built.contains("pr-reviewer"), "{built}");
-    assert!(built.contains("test_drive"), "no test-drive proof: {built}");
+    let built_json: serde_json::Value = serde_json::from_str(&built).unwrap();
+    assert_eq!(built_json["built"], "pr-reviewer", "{built}");
+    assert_eq!(built_json["test_drive"]["status"], "Done", "{built}");
+    let receipt_path =
+        std::path::PathBuf::from(built_json["test_drive"]["receipt"].as_str().unwrap());
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(receipt_path).unwrap()).unwrap();
+    assert_eq!(receipt["agent"], "pr-reviewer");
+    assert_eq!(receipt["perch"], "echo");
 
     // the new bot is declared in agent.toml (manifest-first)…
     // (cwd has no agent.toml here, so the personal home manifest is used)
@@ -178,6 +211,112 @@ fn eggbot_interview_builds_a_bot() {
 
     let state = body(&http(port, "GET", "/api/state", None));
     assert!(state.contains("pr-reviewer"), "bot not in roster: {state}");
+}
+
+#[test]
+fn eggbot_build_rolls_back_manifest_when_spoke_projection_fails() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let project = t.path();
+    let project_manifest = project.join("agent.toml");
+    let original_manifest = "version = 1\nharnesses = [\"nest\"]\n";
+    std::fs::write(&project_manifest, original_manifest).unwrap();
+    let port = start(&home, project);
+    let agents_path = project.join(".nest/agents");
+    std::fs::create_dir_all(project.join(".nest")).unwrap();
+    std::fs::write(&agents_path, "block directory creation").unwrap();
+
+    let start = body(&http(port, "POST", "/api/interview/start", Some("{}")));
+    let session = serde_json::from_str::<serde_json::Value>(&start).unwrap()["session"]
+        .as_u64()
+        .unwrap();
+    let answers = [
+        "transaction-bot",
+        "one safe job",
+        "precise",
+        "no deployment",
+        "reader",
+        "none",
+        "balanced",
+        "build it",
+    ];
+    for answer in answers {
+        body(&http(
+            port,
+            "POST",
+            "/api/interview/answer",
+            Some(&format!(r#"{{"session":{session},"answer":"{answer}"}}"#)),
+        ));
+    }
+    let failed = body(&http(
+        port,
+        "POST",
+        "/api/interview/build",
+        Some(&format!(r#"{{"session":{session}}}"#)),
+    ));
+    assert!(failed.contains("error"), "build should fail: {failed}");
+    assert_eq!(
+        std::fs::read_to_string(&project_manifest).unwrap(),
+        original_manifest,
+        "manifest was not rolled back"
+    );
+    assert!(agents_path.is_file());
+}
+
+#[test]
+fn session_api_persists_messages_and_restores_transcript() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let port = start(&home, t.path());
+    let created = body(&http(
+        port,
+        "POST",
+        "/api/sessions/send",
+        Some(r#"{"bot":"bigbird","task":"persistent session test"}"#),
+    ));
+    let created: serde_json::Value = serde_json::from_str(&created).unwrap();
+    let session = created["session"].as_str().unwrap().to_string();
+    let run = created["id"].as_str().unwrap().to_string();
+    assert!(session.starts_with("session-"));
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let transcript = loop {
+        let raw = body(&http(
+            port,
+            "GET",
+            &format!("/api/sessions/{session}"),
+            None,
+        ));
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        if value["session"]["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.len() == 2 && messages[1]["state"] != "running")
+        {
+            break value["session"].clone();
+        }
+        assert!(Instant::now() < deadline, "session did not finish: {raw}");
+        thread::sleep(Duration::from_millis(20));
+    };
+    let messages = transcript["messages"].as_array().unwrap();
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["text"], "persistent session test");
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["run_id"], run);
+    assert!(matches!(
+        messages[1]["state"].as_str(),
+        Some("done" | "failed" | "spawnfailed" | "budgetexceeded")
+    ));
+    let receipts = body(&http(port, "GET", "/api/runs", None));
+    let receipts: serde_json::Value = serde_json::from_str(&receipts).unwrap();
+    assert!(receipts["receipts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| { r["agent"] == "bigbird" && r["task"] == "persistent session test" }));
+
+    let listed = body(&http(port, "GET", "/api/sessions?bot=bigbird", None));
+    let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(listed["sessions"][0]["id"], session);
 }
 
 #[test]
@@ -240,7 +379,10 @@ fn expert_cli_serves_read_only_commands() {
         "/api/cli",
         Some(r#"{"argv":["hatch"]}"#),
     ));
-    assert!(refused.contains("refused"), "hatch must be refused: {refused}");
+    assert!(
+        refused.contains("refused"),
+        "hatch must be refused: {refused}"
+    );
 
     // expert save round-trips a valid agent.toml…
     let path = home.join("agent.toml");
@@ -249,7 +391,10 @@ fn expert_cli_serves_read_only_commands() {
         port,
         "POST",
         "/api/expert",
-        Some(&serde_json::json!({"path": path.display().to_string(), "content": content}).to_string()),
+        Some(
+            &serde_json::json!({"path": path.display().to_string(), "content": content})
+                .to_string(),
+        ),
     ));
     assert!(save.contains("saved"), "expert save: {save}");
 
@@ -258,9 +403,15 @@ fn expert_cli_serves_read_only_commands() {
         port,
         "POST",
         "/api/expert",
-        Some(&serde_json::json!({"path": path.display().to_string(), "content": "[[[not toml"}).to_string()),
+        Some(
+            &serde_json::json!({"path": path.display().to_string(), "content": "[[[not toml"})
+                .to_string(),
+        ),
     ));
-    assert!(bad.contains("does not parse"), "expert must refuse bad toml: {bad}");
+    assert!(
+        bad.contains("does not parse"),
+        "expert must refuse bad toml: {bad}"
+    );
     assert!(std::fs::read_to_string(&path).unwrap() == content);
 }
 
@@ -281,7 +432,10 @@ fn auto_feather_opt_in_distills_hard_runs() {
 
     // state carries the skill index (empty before any feather)
     let state = body(&http(port, "GET", "/api/state", None));
-    assert!(state.contains("\"skills\":[]"), "skill index missing: {state}");
+    assert!(
+        state.contains("\"skills\":[]"),
+        "skill index missing: {state}"
+    );
 
     // fail a hatch (unknown bot → spawn-failed receipt is NOT auto-feathered;
     // only real receipts qualify — instead feather manually and check index)
@@ -324,7 +478,10 @@ fn auto_feather_opt_in_distills_hard_runs() {
         thread::sleep(Duration::from_millis(200));
     }
     let lock = std::fs::read_to_string(home.join("agent.lock")).unwrap();
-    assert!(lock.contains("feathered by bigbird"), "lockfile provenance: {lock}");
+    assert!(
+        lock.contains("feathered by bigbird"),
+        "lockfile provenance: {lock}"
+    );
 }
 
 #[test]
@@ -424,7 +581,10 @@ fn patrol_triggers_cover_git_push_and_app_events() {
     let state = body(&http(port, "GET", "/api/state", None));
     assert!(state.contains("git-push"), "git-push duty missing: {state}");
     assert!(state.contains("app:deploy"), "app duty missing: {state}");
-    assert!(!state.contains("unsupported trigger"), "duties unsupported: {state}");
+    assert!(
+        !state.contains("unsupported trigger"),
+        "duties unsupported: {state}"
+    );
 }
 
 #[test]

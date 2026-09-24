@@ -163,20 +163,23 @@ fn brood_falls_back_when_first_candidate_fails() {
 }
 
 #[test]
-fn egress_none_fails_runs_that_phone_home() {
+fn egress_advisory_does_not_treat_url_text_as_a_network_breach() {
     let tmp = tempfile::tempdir().unwrap();
     let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
     let mut agent = spec_with("offline", None);
     agent.egress = Some("none".into());
     let perch = Echo;
-    // echo stub prints the prompt back — smuggle a URL into the task
-    let mut h = hatchling::hatch(&agent, "fetch https://example.com now", &perch, tmp.path(), &dirs).unwrap();
+    // Egress is advisory until a real OS/network boundary exists. Merely
+    // printing a URL must not be reported as a blocked network attempt.
+    let mut h = hatchling::hatch(
+        &agent,
+        "fetch https://example.com now",
+        &perch,
+        tmp.path(),
+        &dirs,
+    )
+    .unwrap();
     let receipt = hatchling::wait(&mut h, "fetch", &perch, &agent, tmp.path(), |_| {});
-    assert_eq!(receipt.status, Status::Failed);
-    // same run without the egress lock succeeds
-    let plain = spec_with("online", None);
-    let mut h = hatchling::hatch(&plain, "fetch https://example.com now", &perch, tmp.path(), &dirs).unwrap();
-    let receipt = hatchling::wait(&mut h, "fetch", &perch, &plain, tmp.path(), |_| {});
     assert_eq!(receipt.status, Status::Done);
 }
 
@@ -227,7 +230,11 @@ fn clutch_runs_tasks_in_parallel_and_returns_all_receipts() {
     let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
     let agent = spec_with("worker", None);
     let perch = Echo;
-    let tasks = vec!["first".to_string(), "second".to_string(), "third".to_string()];
+    let tasks = vec![
+        "first".to_string(),
+        "second".to_string(),
+        "third".to_string(),
+    ];
     let receipts = clutch::run(&agent, &tasks, &perch, tmp.path(), &dirs);
     assert_eq!(receipts.len(), 3);
     assert!(receipts.iter().all(|r| r.status == Status::Done));

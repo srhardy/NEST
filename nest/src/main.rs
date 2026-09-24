@@ -276,7 +276,10 @@ fn main() -> Result<()> {
                 }
             }
             if failed > 0 {
-                bail!("{failed} of {} clutch tasks did not finish Done", receipts.len());
+                bail!(
+                    "{failed} of {} clutch tasks did not finish Done",
+                    receipts.len()
+                );
             }
         }
         Cmd::Roost => {

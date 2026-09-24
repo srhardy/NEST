@@ -24,7 +24,9 @@ fn template_keys_live_at_top_level() {
             "'{key}' must be a top-level key in the template"
         );
     }
-    let instructions = table["instructions"].as_table().expect("instructions table");
+    let instructions = table["instructions"]
+        .as_table()
+        .expect("instructions table");
     assert!(
         instructions.contains_key("extra") && !instructions.contains_key("skills"),
         "skills must not be nested inside [instructions]"
@@ -35,7 +37,10 @@ fn template_keys_live_at_top_level() {
 fn save_then_load_roundtrips() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut manifest = Manifest::default();
-    manifest.instructions.extra.push("Prefer small diffs.".to_string());
+    manifest
+        .instructions
+        .extra
+        .push("Prefer small diffs.".to_string());
     manifest.mcp.push(McpServer {
         name: "spoke-fetch".to_string(),
         command: Some("spoke".to_string()),

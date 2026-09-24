@@ -221,10 +221,7 @@ fn read_or_empty(path: &Path) -> Result<String> {
 fn desired_files(op: &Op) -> Result<Vec<(PathBuf, String)>> {
     match op {
         Op::WriteBlock {
-            path,
-            id,
-            contents,
-            ..
+            path, id, contents, ..
         } => {
             let existing = read_or_empty(path)?;
             Ok(vec![(path.clone(), splice_block(&existing, id, contents))])
@@ -245,7 +242,10 @@ fn desired_files(op: &Op) -> Result<Vec<(PathBuf, String)>> {
             ..
         } => {
             let existing = read_or_empty(path)?;
-            Ok(vec![(path.clone(), merge_toml(&existing, pointer, table_toml)?)])
+            Ok(vec![(
+                path.clone(),
+                merge_toml(&existing, pointer, table_toml)?,
+            )])
         }
         Op::WriteFiles {
             root, name, files, ..
@@ -320,28 +320,85 @@ pub fn preview(plan: &Plan) -> Result<Vec<Change>> {
     Ok(changes)
 }
 
+enum Undo {
+    RestoreFile {
+        path: PathBuf,
+        backup: Option<PathBuf>,
+    },
+    RestoreDir {
+        path: PathBuf,
+        backup: PathBuf,
+    },
+}
+
+fn unique_backup(root: &Path, original: &Path, base: &Path) -> Result<PathBuf> {
+    let name = paths::backup_file_name(original, base);
+    let candidate = root.join(&name);
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+    for suffix in 1u64.. {
+        let candidate = root.join(format!("{name}.{suffix}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    unreachable!()
+}
+
+/// Apply a plan transactionally, invoking `commit` only after filesystem
+/// operations succeed. A failed operation or commit restores earlier changes.
+pub fn apply_transaction(
+    plan: &Plan,
+    home: &Path,
+    base: &Path,
+    unix_secs: u64,
+    commit: impl FnOnce() -> Result<()>,
+) -> Result<Vec<Change>> {
+    let mut undo = Vec::new();
+    let result = apply_inner(plan, home, base, unix_secs, &mut undo)
+        .and_then(|changes| commit().map(|()| changes));
+    match result {
+        Ok(changes) => Ok(changes),
+        Err(error) => {
+            rollback(&mut undo).context("rolling back failed Spoke transaction")?;
+            Err(error)
+        }
+    }
+}
+
 /// Apply a plan: back up every file it will touch, then write the merged result.
 /// `base` is the project directory, used only to keep backup filenames readable.
 pub fn apply(plan: &Plan, home: &Path, base: &Path, unix_secs: u64) -> Result<Vec<Change>> {
+    apply_transaction(plan, home, base, unix_secs, || Ok(()))
+}
+
+fn apply_inner(
+    plan: &Plan,
+    home: &Path,
+    base: &Path,
+    unix_secs: u64,
+    undo: &mut Vec<Undo>,
+) -> Result<Vec<Change>> {
     let backup_root = paths::backups_dir(home, unix_secs);
     let mut changes = Vec::new();
 
     for op in &plan.ops {
-        // Deletions are backed up by moving the tree into the backup store.
         if let Op::DeleteDir { path, why } = op {
             if path.exists() {
                 fs::create_dir_all(&backup_root)
                     .with_context(|| format!("creating {}", backup_root.display()))?;
-                let backup = backup_root.join(paths::backup_file_name(path, base));
-                if backup.exists() {
-                    remove_path(&backup)?;
-                }
+                let backup = unique_backup(&backup_root, path, base)?;
                 if let Some(parent) = backup.parent() {
                     fs::create_dir_all(parent)?;
                 }
                 fs::rename(path, &backup).with_context(|| {
                     format!("moving {} into {}", path.display(), backup.display())
                 })?;
+                undo.push(Undo::RestoreDir {
+                    path: path.clone(),
+                    backup,
+                });
                 changes.push(Change {
                     path: path.clone(),
                     kind: op.kind(),
@@ -364,16 +421,24 @@ pub fn apply(plan: &Plan, home: &Path, base: &Path, unix_secs: u64) -> Result<Ve
             if read_or_empty(&path)? == contents {
                 continue;
             }
-            if path.exists() {
+            let backup = if path.exists() {
                 fs::create_dir_all(&backup_root)
                     .with_context(|| format!("creating {}", backup_root.display()))?;
-                let backup = backup_root.join(paths::backup_file_name(&path, base));
+                let backup = unique_backup(&backup_root, &path, base)?;
                 if let Some(parent) = backup.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                fs::copy(&path, &backup)
-                    .with_context(|| format!("backing up {} -> {}", path.display(), backup.display()))?;
-            }
+                fs::copy(&path, &backup).with_context(|| {
+                    format!("backing up {} -> {}", path.display(), backup.display())
+                })?;
+                Some(backup)
+            } else {
+                None
+            };
+            undo.push(Undo::RestoreFile {
+                path: path.clone(),
+                backup,
+            });
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)
                     .with_context(|| format!("creating {}", parent.display()))?;
@@ -391,6 +456,48 @@ pub fn apply(plan: &Plan, home: &Path, base: &Path, unix_secs: u64) -> Result<Ve
     }
 
     Ok(changes)
+}
+
+fn rollback(undo: &mut Vec<Undo>) -> Result<()> {
+    let mut failures = Vec::new();
+    while let Some(action) = undo.pop() {
+        let result = match action {
+            Undo::RestoreFile {
+                path,
+                backup: Some(backup),
+            } => {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&backup, &path).map(|_| ()).with_context(|| {
+                    format!("restoring {} from {}", path.display(), backup.display())
+                })
+            }
+            Undo::RestoreFile { path, backup: None } => {
+                if path.exists() {
+                    remove_path(&path)
+                } else {
+                    Ok(())
+                }
+            }
+            Undo::RestoreDir { path, backup } => {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::rename(&backup, &path).with_context(|| {
+                    format!("restoring {} from {}", path.display(), backup.display())
+                })
+            }
+        };
+        if let Err(error) = result {
+            failures.push(format!("{error:#}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!("rollback failures: {}", failures.join("; "))
+    }
 }
 
 fn remove_path(path: &Path) -> Result<()> {

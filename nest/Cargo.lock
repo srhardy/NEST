@@ -239,6 +239,7 @@ dependencies = [
  "tempfile",
  "tiny_http",
  "toml",
+ "windows-sys",
 ]
 
 [[package]]

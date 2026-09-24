@@ -429,9 +429,15 @@ fn nest_projection_renders_boss_routing_services_and_permissions() {
     manifest.bots.retain(|b| b.name != "debugger");
     let replan = harness.plan(&Ctx::new(home.path(), project.path(), &manifest));
     let ops: Vec<&str> = replan.ops.iter().map(|o| o.kind()).collect();
-    assert!(ops.contains(&"rmdir"), "removal must plan a delete: {ops:?}");
+    assert!(
+        ops.contains(&"rmdir"),
+        "removal must plan a delete: {ops:?}"
+    );
     let _ = apply::apply(&replan, home.path(), project.path(), 3).expect("reap");
-    assert!(!project.path().join(".nest/agents/debugger.md").exists(), "render reaped");
+    assert!(
+        !project.path().join(".nest/agents/debugger.md").exists(),
+        "render reaped"
+    );
     assert!(
         project.path().join(".nest/agents/notes.md").exists(),
         "hand-written notes survive"

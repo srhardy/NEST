@@ -7,15 +7,17 @@
 //! same page later — nothing here assumes a browser.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::io::Read;
-use std::net::ToSocketAddrs;
-use std::path::PathBuf;
+use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 use serde_json::{json, Value};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
@@ -29,6 +31,7 @@ use crate::roost;
 use crate::spec::{self, AgentSpec};
 
 use spoke_adapters::nest::render_bot_md;
+use spoke_core::ir::{Op, Plan};
 use spoke_core::manifest::{Bot, BotMode, Manifest, ToolPolicy};
 
 /// The embedded single-page app.
@@ -81,7 +84,7 @@ impl Run {
 /// Eight questions (name → job → voice → not-job → touch → skills →
 /// model → test-drive); the draft card shows exactly the rendered agent
 /// file Spoke would write, so building is never a surprise.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Interview {
     step: usize,
     name: String,
@@ -92,8 +95,6 @@ struct Interview {
     profile: String,
     skills: String,
     model: String,
-    /// extra frontmatter the test-drive hatch used (imprint proof)
-    test_drove: bool,
 }
 
 /// Lowercase kebab name, starting with a letter — e.g. `bigbird`, `pr-reviewer`.
@@ -201,59 +202,92 @@ impl Interview {
         render_bot_md(&self.bot())
     }
 
-    /// A spoke-diff-style preview card: the manifest entry it will append
-    /// plus the rendered agent file. Persona + files + undo, not just text.
-    fn preview(&self) -> String {
-        let b = self.bot();
-        let mut card = String::from("agent.toml — will append:\n\n[[bots]]\n");
-        card.push_str(&format!("name = \"{}\"\n", b.name));
-        card.push_str(&format!(
-            "title = \"{}\"\n",
-            b.title.clone().unwrap_or_default()
-        ));
-        card.push_str(&format!("job = \"{}\"\n", b.job));
-        if !b.voice.is_empty() {
-            card.push_str(&format!("voice = [\"{}\"]\n", b.voice.join(" ")));
+    fn candidate_manifest(&self, project: &Path) -> Result<(Manifest, String)> {
+        let manifest_path = project.join(spoke_core::manifest::MANIFEST_FILE);
+        let original = if manifest_path.is_file() {
+            std::fs::read_to_string(&manifest_path)
+                .with_context(|| format!("reading {}", manifest_path.display()))?
+        } else {
+            Manifest::template().to_string()
+        };
+        let mut candidate: Manifest = toml::from_str(&original).context("parsing agent.toml")?;
+        let bot = self.bot();
+        if candidate
+            .bots
+            .iter()
+            .any(|existing| existing.name == bot.name)
+        {
+            anyhow::bail!("bot '{}' is already declared", bot.name);
         }
-        if !b.anti_jobs.is_empty() {
-            card.push_str(&format!(
-                "anti_jobs = [{}]\n",
-                b.anti_jobs
-                    .iter()
-                    .map(|a| format!("\"{a}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+        candidate.bots.push(bot);
+        candidate
+            .validate()
+            .context("candidate manifest is invalid")?;
+        #[derive(Serialize)]
+        struct BotEntry<'a> {
+            bots: &'a [Bot],
+        }
+        let encoded = toml::to_string(&BotEntry {
+            bots: std::slice::from_ref(candidate.bots.last().unwrap()),
+        })
+        .context("serializing candidate bot")?;
+        let entry = encoded
+            .strip_prefix("[[bots]]\n")
+            .context("serialized bot entry is malformed")?;
+        let mut updated = original;
+        if !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push('\n');
+        updated.push_str("[[bots]]\n");
+        updated.push_str(entry);
+        Ok((candidate, updated))
+    }
+
+    fn interview_plan(&self, home: &Path, project: &Path) -> Result<(Manifest, String, Plan)> {
+        let (manifest, manifest_body) = self.candidate_manifest(project)?;
+        let mut plan = Plan::default();
+        plan.push(Op::WriteFiles {
+            root: project.to_path_buf(),
+            name: String::new(),
+            files: vec![("agent.toml".into(), manifest_body.clone())],
+            why: "append bot to the source manifest".into(),
+        });
+        let harness = spoke_adapters::nest::Nest;
+        let ctx = spoke_adapters::Ctx::new(home, project, &manifest);
+        plan.extend(spoke_adapters::Harness::plan(&harness, &ctx));
+        if project == home {
+            plan.push(Op::WriteFiles {
+                root: home.to_path_buf(),
+                name: "agents".into(),
+                files: vec![(format!("{}.md", self.name), self.draft())],
+                why: "render personal bot for the NEST roster".into(),
+            });
+        }
+        Ok((manifest, manifest_body, plan))
+    }
+
+    /// Preview the exact Spoke plan which the build path will apply.
+    fn spoke_preview(&self, home: &Path, project: &Path) -> String {
+        let result = (|| -> Result<String> {
+            let (manifest, _, plan) = self.interview_plan(home, project)?;
+            let changes = spoke_adapters::apply::preview(&plan)?;
+            let mut card = String::from("spoke diff — exact planned changes:\n");
+            for change in changes.iter().filter(|change| change.changed) {
+                card.push_str(&format!("\n+ {} — {}\n", change.path.display(), change.why));
+            }
+            for warning in &plan.warnings {
+                card.push_str(&format!("\n! {warning}\n"));
+            }
+            card.push_str("\nrendered agent preview:\n\n");
+            card.push_str(&render_bot_md(
+                manifest.bots.last().context("candidate bot missing")?,
             ));
-        }
-        if !b.skills.is_empty() {
-            card.push_str(&format!("skills = [{}]\n", b.skills.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", ")));
-        }
-        if let Some(m) = &b.model {
-            card.push_str(&format!("model = \"{m}\"\n"));
-        }
-        card.push_str("mode = \"primary\"\nmax_steps = 30\npermissions = { ");
-        card.push_str(
-            &b.permissions
-                .iter()
-                .map(|(t, p)| {
-                    let w = match p {
-                        ToolPolicy::Allow => "allow",
-                        ToolPolicy::Ask => "ask",
-                        ToolPolicy::Deny => "deny",
-                    };
-                    format!("{t} = \"{w}\"")
-                })
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
-        card.push_str(" }\n");
-        card.push_str("\nrenders .nest/agents/<name>.md via spoke sync:\n\n");
-        card.push_str(&self.draft());
-        card.push_str("\nundo: delete the [[bots]] entry + `spoke sync` (backups in ~/.spoke/backups/)");
-        if !self.test_drove {
-            card.push_str("\ntest-drive: pending — 'build it' runs the bot once (echo perch in tests)");
-        }
-        card
+            card.push_str("\nbackups: yes — Spoke backup store\nundo: restore agent.toml and rendered files from the Spoke backup");
+            card.push_str("\ntest-drive: configuration smoke test via echo; this does not verify a real engine");
+            Ok(card)
+        })();
+        result.unwrap_or_else(|error| format!("preview unavailable: {error:#}"))
     }
 }
 
@@ -261,16 +295,129 @@ impl Interview {
 /// can poll receipts without borrowing the Shell.
 type ShellRuns = Arc<Mutex<HashMap<String, Arc<Run>>>>;
 
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+struct Transcript {
+    schema: u32,
+    id: String,
+    bot: String,
+    messages: Vec<TranscriptMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+struct TranscriptMessage {
+    role: String,
+    text: String,
+    run_id: Option<String>,
+    state: String,
+    updated_ms: u64,
+}
+
 /// Shared shell state.
 pub struct Shell {
     dirs: NestDirs,
     cwd: PathBuf,
     runs: ShellRuns,
+    sessions: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     interviews: Mutex<HashMap<u64, Interview>>,
     /// Scheduled/event automations the patrol is watching.
     duties: Vec<patrol::Duty>,
     patrol_warnings: Vec<String>,
+    services: Mutex<Vec<std::process::Child>>,
     seq: Mutex<u64>,
+}
+
+fn replace_file(source: &Path, destination: &Path) -> Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let destination: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let replaced = unsafe {
+            windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING
+                    | windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        anyhow::ensure!(
+            replaced != 0,
+            "atomic transcript replacement failed: {}",
+            std::io::Error::last_os_error()
+        );
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, destination).map_err(Into::into)
+    }
+}
+
+fn service_command(start: &str) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", start]);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", start]);
+        command
+    }
+}
+
+fn http_health_ok(port: u16, path: &str) -> bool {
+    if !path.starts_with('/') || path.contains(['\r', '\n', ' ']) {
+        return false;
+    }
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(300)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut status = [0; 64];
+    let Ok(count) = stream.read(&mut status) else {
+        return false;
+    };
+    std::str::from_utf8(&status[..count])
+        .ok()
+        .and_then(|line| line.lines().next())
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .is_some_and(|code| (200..300).contains(&code))
+}
+
+fn stop_service(child: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .output();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+impl Drop for Shell {
+    fn drop(&mut self) {
+        if let Ok(children) = self.services.get_mut() {
+            for child in children {
+                stop_service(child);
+            }
+        }
+    }
 }
 
 impl Shell {
@@ -280,9 +427,11 @@ impl Shell {
             dirs,
             cwd,
             runs: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Mutex::new(HashMap::new()),
             interviews: Mutex::new(HashMap::new()),
             duties,
             patrol_warnings,
+            services: Mutex::new(Vec::new()),
             seq: Mutex::new(0),
         }
     }
@@ -312,43 +461,47 @@ impl Shell {
             let Some(start) = svc.start.as_deref().filter(|s| !s.trim().is_empty()) else {
                 continue;
             };
-            if self.service_healthy(svc) {
+            if self.service_has_check(svc) && self.service_healthy(svc) {
                 continue;
             }
-            match std::process::Command::new("sh").args(["-c", start]).output() {
-                Ok(out) if out.status.success() => {
-                    // re-check: started means healthy now (or will be shortly)
+            match service_command(start).spawn() {
+                Ok(child) => {
+                    self.services.lock().unwrap().push(child);
+                    if self.service_has_check(svc) {
+                        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                        while std::time::Instant::now() < deadline {
+                            if self.service_healthy(svc) {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(100));
+                        }
+                        if !self.service_healthy(svc) {
+                            warnings.push(format!("service '{}' did not become healthy", svc.name));
+                        }
+                    }
                 }
-                Ok(out) => warnings.push(format!(
-                    "service '{}' start exited {}",
-                    svc.name,
-                    out.status.code().unwrap_or(-1)
-                )),
                 Err(e) => warnings.push(format!("service '{}' failed to start: {e}", svc.name)),
             }
         }
         warnings
     }
 
-    /// Is this service up? `health` path over HTTP wins; else a TCP
-    /// connect to `port` on loopback; neither declared means "assume up"
-    /// (nothing to check — don't boot-loop it).
+    fn service_has_check(&self, svc: &spoke_core::manifest::Service) -> bool {
+        svc.port.is_some()
+    }
+
+    /// Is this service up? `health` paths are queried over loopback HTTP;
+    /// otherwise a TCP connection is used.
     fn service_healthy(&self, svc: &spoke_core::manifest::Service) -> bool {
-        if let (Some(port), Some(health)) = (svc.port, svc.health.as_deref()) {
-            let url = format!("http://127.0.0.1:{port}{health}");
-            return std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
-                .map(|_| {
-                    // port open — health path check is the bridges' job;
-                    // TCP reachability is enough for boot/no-boot
-                    let _ = url;
-                    true
-                })
-                .unwrap_or(false);
+        match (svc.port, svc.health.as_deref()) {
+            (Some(port), Some(path)) => http_health_ok(port, path),
+            (Some(port), None) => std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+                Duration::from_millis(300),
+            )
+            .is_ok(),
+            (None, _) => true,
         }
-        if let Some(port) = svc.port {
-            return std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok();
-        }
-        true
     }
 
     /// First run plants a commented providers.toml — the format is
@@ -397,11 +550,11 @@ impl Shell {
                         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
                     && name.chars().next().is_some_and(|c| c.is_ascii_lowercase());
                 if !ok {
-                    let out = json!({"error": "names must be lowercase-kebab, e.g. pr-reviewer", "question": iv.question(), "draft": iv.preview()});
+                    let out = json!({"error": "names must be lowercase-kebab, e.g. pr-reviewer", "question": iv.question(), "draft": iv.spoke_preview(&self.dirs.home, &self.interview_manifest_dir())});
                     return out;
                 }
                 if self.agents().0.iter().any(|a| a.name == name) {
-                    let out = json!({"error": format!("a bot named {name} already roosts here"), "question": iv.question(), "draft": iv.preview()});
+                    let out = json!({"error": format!("a bot named {name} already roosts here"), "question": iv.question(), "draft": iv.spoke_preview(&self.dirs.home, &self.interview_manifest_dir())});
                     return out;
                 }
                 iv.name = name;
@@ -409,7 +562,7 @@ impl Shell {
             }
             1 => {
                 if answer.is_empty() {
-                    let out = json!({"error": "one job, in a sentence", "question": iv.question(), "draft": iv.preview()});
+                    let out = json!({"error": "one job, in a sentence", "question": iv.question(), "draft": iv.spoke_preview(&self.dirs.home, &self.interview_manifest_dir())});
                     return out;
                 }
                 iv.job = answer.to_string();
@@ -442,17 +595,18 @@ impl Shell {
             }
             7 => {
                 if answer == "build it" || answer == "build" || answer == "yes" {
-                    let out = json!({"done": true, "draft": iv.preview()});
+                    iv.step = 8;
+                    let out = json!({"done": true, "draft": iv.spoke_preview(&self.dirs.home, &self.interview_manifest_dir())});
                     return out;
                 }
                 // anything else restarts the loop on that topic — keep it simple: re-ask
-                let out = json!({"question": "almost — say 'build it' when the preview looks right", "draft": iv.preview()});
+                let out = json!({"question": "almost — say 'build it' when the preview looks right", "draft": iv.spoke_preview(&self.dirs.home, &self.interview_manifest_dir())});
                 return out;
             }
             _ => {}
         }
         iv.step += 1;
-        let out = json!({"question": iv.question(), "draft": iv.preview(), "done": false});
+        let out = json!({"question": iv.question(), "draft": iv.spoke_preview(&self.dirs.home, &self.interview_manifest_dir()), "done": false});
         out
     }
 
@@ -472,116 +626,39 @@ impl Shell {
             .interviews
             .lock()
             .unwrap()
-            .remove(&session)
+            .get(&session)
+            .cloned()
             .context("no such interview")?;
+        if iv.step != 8 {
+            anyhow::bail!("interview must be confirmed before building");
+        }
         let bot = iv.bot();
-        bot.validate().context("interview produced an invalid bot")?;
+        bot.validate()
+            .context("interview produced an invalid bot")?;
         let project = self.interview_manifest_dir();
         let manifest_path = project.join(spoke_core::manifest::MANIFEST_FILE);
-        // load or seed a manifest — never clobber comments, append raw TOML
-        let mut manifest = if manifest_path.is_file() {
-            Manifest::load(&project).context("reading agent.toml")?
-        } else {
-            Manifest::default()
-        };
-        if manifest.bots.iter().any(|b| b.name == bot.name) {
-            anyhow::bail!("bot '{}' is already declared in {}", bot.name, manifest_path.display());
-        }
-        if !manifest_path.is_file() {
-            std::fs::write(&manifest_path, Manifest::template())
-                .with_context(|| format!("seeding {}", manifest_path.display()))?;
-            manifest = Manifest::load(&project).context("reading seeded agent.toml")?;
-        }
-        let mut body = std::fs::read_to_string(&manifest_path)
-            .with_context(|| format!("reading {}", manifest_path.display()))?;
-        if !body.ends_with('\n') {
-            body.push('\n');
-        }
-        body.push_str("\n[[bots]]\n");
-        body.push_str(&format!("name = \"{}\"\n", bot.name.replace('"', "")));
-        if let Some(title) = &bot.title {
-            body.push_str(&format!("title = \"{}\"\n", title.replace('"', "'")));
-        }
-        body.push_str(&format!("job = \"{}\"\n", bot.job.replace('"', "'")));
-        if !bot.voice.is_empty() {
-            body.push_str(&format!(
-                "voice = [{}]\n",
-                bot.voice
-                    .iter()
-                    .map(|v| format!("\"{}\"", v.replace('"', "'")))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        if !bot.anti_jobs.is_empty() {
-            body.push_str(&format!(
-                "anti_jobs = [{}]\n",
-                bot.anti_jobs
-                    .iter()
-                    .map(|a| format!("\"{}\"", a.replace('"', "'")))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        if !bot.skills.is_empty() {
-            body.push_str(&format!(
-                "skills = [{}]\n",
-                bot.skills
-                    .iter()
-                    .map(|s| format!("\"{s}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        if let Some(m) = &bot.model {
-            body.push_str(&format!("model = \"{m}\"\n"));
-        }
-        body.push_str("mode = \"primary\"\nmax_steps = 30\negress = \"same-project\"\npermissions = { ");
-        body.push_str(
-            &bot.permissions
-                .iter()
-                .map(|(t, p)| {
-                    let w = match p {
-                        ToolPolicy::Allow => "allow",
-                        ToolPolicy::Ask => "ask",
-                        ToolPolicy::Deny => "deny",
-                    };
-                    format!("{t} = \"{w}\"")
-                })
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
-        body.push_str(" }\n");
-        std::fs::write(&manifest_path, &body)
-            .with_context(|| format!("writing {}", manifest_path.display()))?;
-        // validate the merged manifest before rendering
-        let manifest = Manifest::load(&project).context("re-reading agent.toml")?;
-        manifest.validate().context("merged agent.toml is invalid")?;
-        // render via the nest adapter with backups — same path as `spoke sync`
-        let harness = spoke_adapters::nest::Nest;
-        let ctx = spoke_adapters::Ctx::new(&self.dirs.home, &project, &manifest);
-        let plan = spoke_adapters::Harness::plan(&harness, &ctx);
+        let (_, _, plan) = iv.interview_plan(&self.dirs.home, &project)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let changes = spoke_adapters::apply::apply(&plan, &self.dirs.home, &project, now)
-            .context("rendering .nest/ from agent.toml")?;
-        let mut rendered: Vec<String> = changes
+        let changes =
+            spoke_adapters::apply::apply_transaction(&plan, &self.dirs.home, &project, now, || {
+                if !manifest_path.is_file() {
+                    return Ok(());
+                }
+                let candidate_text = fs::read_to_string(&manifest_path)?;
+                let parsed: Manifest = toml::from_str(&candidate_text)?;
+                parsed.validate()?;
+                Ok(())
+            })
+            .context("committing bot manifest and Spoke projections")?;
+        self.interviews.lock().unwrap().remove(&session);
+        let rendered: Vec<String> = changes
             .iter()
             .filter(|c| c.changed)
             .map(|c| c.path.display().to_string())
             .collect();
-        // personal bots live flat in home/agents/ (the engine's personal
-        // dir), not under the adapter's project .nest/ — write the same
-        // Spoke render there too so the roster picks it up
-        if project == self.dirs.home {
-            let dir = self.dirs.home.join("agents");
-            std::fs::create_dir_all(&dir)?;
-            let path = dir.join(format!("{}.md", bot.name));
-            std::fs::write(&path, render_bot_md(&bot))?;
-            rendered.push(path.display().to_string());
-        }
         // a bot that hasn't run isn't done — hatch it once on the echo
         // stub and record the receipt. Echo is always available, so the
         // interview can never fail for lack of a paid CLI on PATH.
@@ -592,8 +669,21 @@ impl Shell {
             .find(|a| a.name == bot.name)
             .context("rendered bot not found in roster")?;
         let perch = perch::perch_named("echo").unwrap();
-        let mut h = hatchling::hatch(agent, "introduce yourself in one line", perch.as_ref(), &self.cwd, &self.dirs)?;
-        let receipt = hatchling::wait(&mut h, "introduce yourself", perch.as_ref(), agent, &self.cwd, |_| {});
+        let mut h = hatchling::hatch(
+            agent,
+            "introduce yourself in one line",
+            perch.as_ref(),
+            &self.cwd,
+            &self.dirs,
+        )?;
+        let receipt = hatchling::wait(
+            &mut h,
+            "introduce yourself",
+            perch.as_ref(),
+            agent,
+            &self.cwd,
+            |_| {},
+        );
         let receipt_path = roost::record(&self.dirs.roost(), &receipt)?;
         Ok(json!({
             "built": bot.name,
@@ -655,8 +745,7 @@ impl Shell {
             let events = run.events.lock().unwrap();
             let saw_output = events.iter().any(|e| {
                 e.get("bot").and_then(|b| b.as_str()) == Some(name)
-                    && e
-                        .get("peep")
+                    && e.get("peep")
                         .and_then(|p| p.get("kind"))
                         .and_then(|k| k.as_str())
                         .is_some_and(|k| k == "output" || k == "step")
@@ -706,6 +795,181 @@ impl Shell {
         json!({ "receipts": roost::receipts(&self.dirs.roost()).unwrap_or_default() })
     }
 
+    fn session_lock(&self, id: &str) -> Arc<Mutex<()>> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    fn transcript_path(&self, id: &str) -> Result<PathBuf> {
+        anyhow::ensure!(
+            !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+            "invalid transcript id"
+        );
+        Ok(self.dirs.home.join("sessions").join(format!("{id}.json")))
+    }
+
+    fn transcript(&self, id: &str, bot: Option<&str>) -> Result<Transcript> {
+        let path = self.transcript_path(id)?;
+        if path.is_file() {
+            let mut transcript: Transcript = serde_json::from_slice(&fs::read(&path)?)?;
+            anyhow::ensure!(transcript.schema == 1, "unsupported transcript schema");
+            anyhow::ensure!(
+                transcript.id == id && bot.is_none_or(|expected| transcript.bot == expected),
+                "session identity mismatch"
+            );
+            let mut changed = false;
+            for message in &mut transcript.messages {
+                if message.state == "running"
+                    && message
+                        .run_id
+                        .as_ref()
+                        .is_none_or(|run_id| self.runs.lock().unwrap().get(run_id).is_none())
+                {
+                    message.state = "interrupted".into();
+                    changed = true;
+                }
+            }
+            if changed {
+                self.save_transcript(&transcript)?;
+            }
+            return Ok(transcript);
+        }
+        Ok(Transcript {
+            schema: 1,
+            id: id.to_string(),
+            bot: bot.unwrap_or("nest").to_string(),
+            messages: Vec::new(),
+        })
+    }
+
+    fn list_transcripts(&self, bot: &str) -> Vec<Transcript> {
+        let root = self.dirs.home.join("sessions");
+        let Ok(entries) = fs::read_dir(root) else {
+            return Vec::new();
+        };
+        let mut sessions: Vec<Transcript> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .filter_map(|entry| fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice::<Transcript>(&bytes).ok())
+            .filter(|session| session.schema == 1 && session.bot == bot)
+            .collect();
+        sessions.sort_by_key(|session| {
+            std::cmp::Reverse(
+                session
+                    .messages
+                    .last()
+                    .map(|message| message.updated_ms)
+                    .unwrap_or(0),
+            )
+        });
+        sessions
+    }
+
+    fn persist_run_to_transcript(&self, session_id: String, bot: String, run_id: String) {
+        let home = self.dirs.home.clone();
+        let runs = self.runs.clone();
+        let session_lock = self.session_lock(&session_id);
+        thread::spawn(move || loop {
+            let run = runs.lock().unwrap().get(&run_id).cloned();
+            let Some(run) = run else {
+                return;
+            };
+            if run.done.load(Ordering::SeqCst) {
+                let _session_guard = session_lock.lock().unwrap();
+                let transcript_path = home.join("sessions").join(format!("{session_id}.json"));
+                let Ok(bytes) = fs::read(&transcript_path) else {
+                    return;
+                };
+                let Ok(mut transcript) = serde_json::from_slice::<Transcript>(&bytes) else {
+                    return;
+                };
+                if transcript.schema != 1 || transcript.id != session_id || transcript.bot != bot {
+                    return;
+                }
+                let output = run
+                    .events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|event| {
+                        if event["bot"]
+                            .as_str()
+                            .is_some_and(|name| name != bot && bot != "nest")
+                        {
+                            return None;
+                        }
+                        (event["peep"]["kind"].as_str() == Some("output")).then(|| {
+                            event["peep"]["text"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string()
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let status = run
+                    .receipt
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|receipt| format!("{:?}", receipt.status).to_lowercase())
+                    .unwrap_or_else(|| "interrupted".into());
+                if let Some(message) = transcript
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|message| message.run_id.as_deref() == Some(&run_id))
+                {
+                    message.text = output;
+                    message.state = status;
+                    message.updated_ms = hatchling::now_ms();
+                }
+                let temp = transcript_path.with_extension(format!(
+                    "{}.{}.tmp",
+                    std::process::id(),
+                    thread::current().name().unwrap_or("session")
+                ));
+                if let Ok(serialized) = serde_json::to_vec_pretty(&transcript) {
+                    if fs::write(&temp, serialized).is_ok() {
+                        let _ = fs::remove_file(&transcript_path);
+                        let _ = fs::rename(&temp, &transcript_path);
+                    }
+                }
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        });
+    }
+
+    fn save_transcript(&self, transcript: &Transcript) -> Result<()> {
+        const MAX_MESSAGES: usize = 500;
+        const MAX_TEXT_BYTES: usize = 64 * 1024;
+        anyhow::ensure!(transcript.schema == 1, "unsupported transcript schema");
+        anyhow::ensure!(
+            transcript.messages.len() <= MAX_MESSAGES,
+            "session has too many messages"
+        );
+        anyhow::ensure!(
+            transcript
+                .messages
+                .iter()
+                .all(|m| m.text.len() <= MAX_TEXT_BYTES),
+            "session message exceeds size limit"
+        );
+        let path = self.transcript_path(&transcript.id)?;
+        fs::create_dir_all(path.parent().unwrap())?;
+        let temp = path.with_extension(format!("{}.tmp", std::process::id()));
+        let data = serde_json::to_vec_pretty(transcript)?;
+        fs::write(&temp, data)?;
+        replace_file(&temp, &path)?;
+        Ok(())
+    }
+
     /// Spawn a hatch run in the background; returns the run id.
     fn start_hatch(&self, bot: &str, task: &str, perch_name: Option<&str>) -> Result<String> {
         let (agents, _) = self.agents();
@@ -737,14 +1001,10 @@ impl Shell {
                 Ok(mut h) => {
                     let run2 = run.clone();
                     let name = agent.name.clone();
-                    let r = hatchling::wait(
-                        &mut h,
-                        &task,
-                        perch.as_ref(),
-                        &agent,
-                        &cwd,
-                        move |peep| run2.emit_peep(&name, peep),
-                    );
+                    let r =
+                        hatchling::wait(&mut h, &task, perch.as_ref(), &agent, &cwd, move |peep| {
+                            run2.emit_peep(&name, peep)
+                        });
                     r
                 }
                 Err(e) => {
@@ -1552,10 +1812,12 @@ fn route<'a>(
                 );
             }
             files.push(shell.dirs.home.join("providers.toml"));
-            let note = |p: &PathBuf| match p.file_name().and_then(|f| f.to_str()) {
+            let note = |p: &PathBuf| {
+                match p.file_name().and_then(|f| f.to_str()) {
                 Some("mcp.json") => "projected config — spoke writes it, nest doesn't read it yet",
-                Some("services.toml") => "declared services — boot on start not wired yet",
+                Some("services.toml") => "declared services — started on shell/daemon boot; HTTP health paths are checked on loopback",
                 _ => "",
+            }
             };
             let files: Vec<Value> = files
                 .iter()
@@ -1576,15 +1838,21 @@ fn route<'a>(
             let path = v["path"].as_str().unwrap_or_default().to_string();
             let content = v["content"].as_str().unwrap_or_default().to_string();
             // only agent.toml is writable — it is validated before it lands
-            let allowed = shell.cwd.join("agent.toml") == PathBuf::from(&path)
-                || shell.dirs.home.join("agent.toml") == PathBuf::from(&path);
+            let allowed = shell.cwd.join("agent.toml").as_path() == Path::new(&path)
+                || shell.dirs.home.join("agent.toml").as_path() == Path::new(&path);
             if !allowed {
-                return json_response(json!({"error": "only agent.toml is editable in expert mode"}));
+                return json_response(
+                    json!({"error": "only agent.toml is editable in expert mode"}),
+                );
             }
             let parsed: Result<Manifest, _> = toml::from_str(&content);
             let manifest = match parsed {
                 Ok(m) => m,
-                Err(e) => return json_response(json!({"error": format!("agent.toml does not parse: {e}")})),
+                Err(e) => {
+                    return json_response(
+                        json!({"error": format!("agent.toml does not parse: {e}")}),
+                    )
+                }
             };
             if let Err(e) = manifest.validate() {
                 return json_response(json!({"error": format!("agent.toml invalid: {e:#}")}));
@@ -1599,7 +1867,11 @@ fn route<'a>(
             let v: Value = serde_json::from_str(&body).unwrap_or_default();
             let argv: Vec<String> = v["argv"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             let Some((cmd, _rest)) = argv.split_first() else {
                 return json_response(json!({"error": "empty command"}));
@@ -1614,7 +1886,9 @@ fn route<'a>(
                             format!(
                                 "{:<16} {:<10} {}{}",
                                 a.name,
-                                a.mode.map(|m| format!("{m:?}").to_lowercase()).unwrap_or_default(),
+                                a.mode
+                                    .map(|m| format!("{m:?}").to_lowercase())
+                                    .unwrap_or_default(),
                                 a.job,
                                 if a.boss { " (boss)" } else { "" }
                             )
@@ -1673,7 +1947,9 @@ fn route<'a>(
                     .collect::<Vec<_>>()
                     .join("\n"),
                 other => {
-                    return json_response(json!({"error": format!("refused — '{other}' is not read-only (agents, perches, providers, roost)")}));
+                    return json_response(
+                        json!({"error": format!("refused — '{other}' is not read-only (agents, perches, providers, roost)")}),
+                    );
                 }
             };
             json_response(json!({"output": out}))
@@ -1685,7 +1961,11 @@ fn route<'a>(
             let body = read_body(request);
             let v: Value = serde_json::from_str(&body).unwrap_or_default();
             let name = v["bot"].as_str().unwrap_or_default().to_string();
-            if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') || name.is_empty() {
+            if !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                || name.is_empty()
+            {
                 return json_response(json!({"error": "bad bot name"}));
             }
             let (agents, _) = shell.agents();
@@ -1803,6 +2083,83 @@ fn route<'a>(
                 Err(e) => json_response(json!({"error": format!("{e:#}")})),
             }
         }
+        (&Method::Get, "/api/sessions") => {
+            let bot = request
+                .url()
+                .split_once("?bot=")
+                .map(|(_, value)| value.split('&').next().unwrap_or_default())
+                .unwrap_or("nest");
+            json_response(json!({
+                "sessions": shell.list_transcripts(bot).iter().map(|session| json!({
+                    "id": session.id,
+                    "bot": session.bot,
+                    "updated_ms": session.messages.last().map(|m| m.updated_ms).unwrap_or(0),
+                    "messages": session.messages.len(),
+                })).collect::<Vec<_>>()
+            }))
+        }
+        (&Method::Get, p) if p.starts_with("/api/sessions/") => {
+            let id = &p["/api/sessions/".len()..];
+            let session_lock = shell.session_lock(id);
+            let _session_guard = session_lock.lock().unwrap();
+            match shell.transcript(id, None) {
+                Ok(transcript) => json_response(json!({"session": transcript})),
+                Err(error) => json_response(json!({"error": format!("{error:#}")})),
+            }
+        }
+        (&Method::Post, "/api/sessions/send") => {
+            let body = read_body(request);
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            let bot = v["bot"].as_str().unwrap_or("nest");
+            let requested_id = v["session"].as_str();
+            let id = requested_id.map(str::to_string).unwrap_or_else(|| {
+                format!(
+                    "session-{}-{}-{}",
+                    hatchling::now_ms(),
+                    std::process::id(),
+                    shell.next_order()
+                )
+            });
+            let task = v["task"].as_str().unwrap_or_default();
+            let result = (|| -> Result<Value> {
+                anyhow::ensure!(!task.trim().is_empty(), "message cannot be empty");
+                let session_lock = shell.session_lock(&id);
+                let _session_guard = session_lock.lock().unwrap();
+                let mut transcript = shell.transcript(&id, Some(bot))?;
+                transcript.messages.push(TranscriptMessage {
+                    role: "user".into(),
+                    text: task.into(),
+                    run_id: None,
+                    state: "done".into(),
+                    updated_ms: hatchling::now_ms(),
+                });
+                shell.save_transcript(&transcript)?;
+                let run = if bot == "nest" {
+                    shell.start_brood(task, None)?
+                } else {
+                    shell.start_hatch(bot, task, None)?
+                };
+                transcript.messages.push(TranscriptMessage {
+                    role: "assistant".into(),
+                    text: String::new(),
+                    run_id: Some(run.clone()),
+                    state: "running".into(),
+                    updated_ms: hatchling::now_ms(),
+                });
+                shell.save_transcript(&transcript)?;
+                shell.persist_run_to_transcript(
+                    transcript.id.clone(),
+                    bot.to_string(),
+                    run.clone(),
+                );
+                shell.auto_feather_after(&run);
+                Ok(json!({"id": run, "session": transcript.id}))
+            })();
+            match result {
+                Ok(value) => json_response(value),
+                Err(error) => json_response(json!({"error": format!("{error:#}")})),
+            }
+        }
         (&Method::Post, "/api/hatch") | (&Method::Post, "/api/brood") => {
             let body = read_body(request);
             let v: Value = serde_json::from_str(&body).unwrap_or_default();
@@ -1861,5 +2218,256 @@ fn route<'a>(
             }
         }
         _ => respond("not found".into(), "text/plain", 404),
+    }
+}
+
+#[cfg(test)]
+mod service_tests {
+    use super::*;
+
+    #[test]
+    fn transcript_persists_and_isolated_by_bot() {
+        let home = tempfile::tempdir().unwrap();
+        let shell = Shell::new(
+            NestDirs {
+                project: None,
+                home: home.path().to_path_buf(),
+            },
+            home.path().to_path_buf(),
+        );
+        let transcript = Transcript {
+            schema: 1,
+            id: "session-1".into(),
+            bot: "planner".into(),
+            messages: vec![TranscriptMessage {
+                role: "user".into(),
+                text: "find the bug".into(),
+                run_id: None,
+                state: "done".into(),
+                updated_ms: 42,
+            }],
+        };
+        shell.save_transcript(&transcript).unwrap();
+        assert_eq!(
+            shell
+                .transcript("session-1", Some("planner"))
+                .unwrap()
+                .messages[0]
+                .text,
+            "find the bug"
+        );
+        assert!(shell.transcript("session-1", Some("executor")).is_err());
+        assert_eq!(shell.list_transcripts("planner").len(), 1);
+        assert!(shell.list_transcripts("executor").is_empty());
+    }
+
+    #[test]
+    fn independent_sessions_for_same_bot_do_not_cross_contaminate() {
+        let home = tempfile::tempdir().unwrap();
+        let shell = Shell::new(
+            NestDirs {
+                project: None,
+                home: home.path().to_path_buf(),
+            },
+            home.path().to_path_buf(),
+        );
+        for (id, text) in [("session-a", "first"), ("session-b", "second")] {
+            let transcript = Transcript {
+                schema: 1,
+                id: id.into(),
+                bot: "planner".into(),
+                messages: vec![TranscriptMessage {
+                    role: "user".into(),
+                    text: text.into(),
+                    run_id: None,
+                    state: "done".into(),
+                    updated_ms: if id == "session-a" { 1 } else { 2 },
+                }],
+            };
+            shell.save_transcript(&transcript).unwrap();
+        }
+        assert_eq!(
+            shell
+                .transcript("session-a", Some("planner"))
+                .unwrap()
+                .messages[0]
+                .text,
+            "first"
+        );
+        assert_eq!(
+            shell
+                .transcript("session-b", Some("planner"))
+                .unwrap()
+                .messages[0]
+                .text,
+            "second"
+        );
+        assert_eq!(shell.list_transcripts("planner").len(), 2);
+    }
+
+    #[test]
+    fn orphaned_running_transcript_messages_become_interrupted() {
+        let home = tempfile::tempdir().unwrap();
+        let shell = Shell::new(
+            NestDirs {
+                project: None,
+                home: home.path().to_path_buf(),
+            },
+            home.path().to_path_buf(),
+        );
+        let transcript = Transcript {
+            schema: 1,
+            id: "session-crash".into(),
+            bot: "planner".into(),
+            messages: vec![TranscriptMessage {
+                role: "assistant".into(),
+                text: "partial output".into(),
+                run_id: Some("missing-run".into()),
+                state: "running".into(),
+                updated_ms: 1,
+            }],
+        };
+        shell.save_transcript(&transcript).unwrap();
+        let restored = shell.transcript("session-crash", Some("planner")).unwrap();
+        assert_eq!(restored.messages[0].state, "interrupted");
+        let persisted: Transcript = serde_json::from_slice(
+            &fs::read(home.path().join("sessions/session-crash.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted.messages[0].state, "interrupted");
+        assert_eq!(persisted.messages[0].text, "partial output");
+    }
+
+    #[test]
+    fn transcript_rejects_invalid_ids_and_oversized_messages() {
+        let home = tempfile::tempdir().unwrap();
+        let shell = Shell::new(
+            NestDirs {
+                project: None,
+                home: home.path().to_path_buf(),
+            },
+            home.path().to_path_buf(),
+        );
+        assert!(shell.transcript_path("../escape").is_err());
+        let transcript = Transcript {
+            schema: 1,
+            id: "session-1".into(),
+            bot: "planner".into(),
+            messages: vec![TranscriptMessage {
+                role: "user".into(),
+                text: "x".repeat(64 * 1024 + 1),
+                run_id: None,
+                state: "done".into(),
+                updated_ms: 1,
+            }],
+        };
+        assert!(shell.save_transcript(&transcript).is_err());
+    }
+
+    #[test]
+    fn health_check_requests_configured_path_and_accepts_success_status() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 512];
+            let count = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..count]);
+            assert!(request.starts_with("GET /ready HTTP/1.1\r\n"));
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        assert!(http_health_ok(port, "/ready"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn health_check_rejects_non_success_and_invalid_paths() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 512];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        assert!(!http_health_ok(port, "/health"));
+        server.join().unwrap();
+        assert!(!http_health_ok(port, "http://example.com/"));
+        assert!(!http_health_ok(port, "/health\\r\\nHost: evil"));
+    }
+
+    #[test]
+    fn service_command_spawns_without_waiting_for_completion() {
+        let mut child = service_command("exit 0").spawn().unwrap();
+        let status = child.wait().unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn dropping_shell_stops_owned_service_children() {
+        let home = tempfile::tempdir().unwrap();
+        let dirs = NestDirs {
+            project: None,
+            home: home.path().to_path_buf(),
+        };
+        let mut shell = Shell::new(dirs, home.path().to_path_buf());
+        let child = service_command("ping -t 127.0.0.1 >NUL").spawn().unwrap();
+        shell.services.get_mut().unwrap().push(child);
+        drop(shell);
+    }
+
+    #[test]
+    fn boot_services_skips_start_when_http_health_is_already_successful() {
+        let home = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 512];
+            let count = stream.read(&mut request).unwrap();
+            assert!(
+                String::from_utf8_lossy(&request[..count]).starts_with("GET /ready HTTP/1.1\r\n")
+            );
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        std::fs::write(
+            home.path().join("services.toml"),
+            format!("[[service]]\nname = \"healthy\"\nport = {port}\nhealth = \"/ready\"\nstart = \"nest-command-must-not-run\"\n"),
+        )
+        .unwrap();
+        let dirs = NestDirs {
+            project: None,
+            home: home.path().to_path_buf(),
+        };
+        let shell = Shell::new(dirs, home.path().to_path_buf());
+        assert!(shell.boot_services().is_empty());
+        assert!(shell.services.lock().unwrap().is_empty());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn boot_services_spawns_without_health_check_blocking_startup() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("services.toml"),
+            "[[service]]\nname = \"test\"\nstart = \"exit 0\"\n",
+        )
+        .unwrap();
+        let dirs = NestDirs {
+            project: None,
+            home: home.path().to_path_buf(),
+        };
+        let shell = Shell::new(dirs, home.path().to_path_buf());
+        let started = std::time::Instant::now();
+        let warnings = shell.boot_services();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(warnings.is_empty());
+        assert_eq!(shell.services.lock().unwrap().len(), 1);
     }
 }

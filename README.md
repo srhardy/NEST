@@ -1,15 +1,15 @@
 # NEST
 
-**One window. A cast of little workers. No terminal required.**
+**One window. A cast of little workers. Built around the agent CLIs you already use.**
 
-NEST turns your machine into a warm home for AI agents — *bots* — that you can see, talk to, and grow. It wraps the powerful command-line tools you already have (Claude, Codex, OpenCode, and friends) in a friendly interface where each bot is an animated character with a job, a voice, and a memory. Point it at a task and the nest dispatches the right bot; watch it think; keep what it learned.
+NEST turns your machine into a warm home for AI agents — *bots* — that you can see, talk to, and grow. It wraps the command-line tools you already have (Claude, Codex, OpenCode, and friends) in a friendly interface where each bot has a job, a voice, and reusable skills. Point it at a task and NEST dispatches a CLI run; watch its live output and keep reusable skills it learns. Chat transcripts are stored locally under `~/.nest/sessions/` and restore after reload; provider-native context continuity, edit/delete controls, and multi-turn continuation behavior vary by perch and remain limited.
 
-Built on top of **[Spoke](https://github.com/srhardy/spoke)** — the config/package layer that makes everything a one-click install.
+Built on top of Spoke, the shared manifest, projection, and package layer for agent tools.
 
 ## Why NEST is awesome
 
 ### You don't need to know anything to start
-Open NEST and **eggbot** walks you through building your first bot with eight questions — name, job, personality, not-job, what it can touch, skills, model tier — then shows you the spoke diff (manifest entry + rendered file) before a single file is saved, and test-drives the bot once (a bot that hasn't run isn't done).
+Open NEST and **eggbot** walks you through building a bot. It previews the generated manifest and Spoke projection before building; the current post-build smoke test uses the built-in Echo perch and does not verify a real external engine.
 
 ### Bots are characters, not config files
 Your roster is a living cast of animated birds on a black canvas — each bot gets its own color, flaps while it works, and tells you when it succeeds or fails. A **watch-it-think** stream shows what your bot is doing as it does it. Dark mode with three themes: fluro, monochrome, and full-color cast.
@@ -23,14 +23,14 @@ When the nest itself needs a model — `nest ask`, `nest feather` — it ranks y
 ### Bots that learn
 When a bot finishes a hard task, `nest feather` distills the run into a reusable skill file — provenance stamped with which bot authored it. Add it to any bot's `skills:` list and its next run starts smarter. The roster literally improves with use.
 
-### Everything is a one-click Spoke package
-Remotes (Telegram, Slack, smart watch), provider integrations, council packs, starter bots — every capability arrives as a Spoke package, installed with a single `spoke add`. Add it upstream later; users never manage plumbing.
+### Shareable Spoke packages
+Spoke can install local or indexed skill/bot packages with `spoke add`. NEST includes a small static registry of starter bots, remote bridge skills, and the Bob council; package commands execute trusted local/Git content, so review a package before installing. This is not a hosted marketplace.
 
-### It disappears when you don't need it
-Minimize to the taskbar and NEST keeps working quietly — desktop notification bubbles when a bot finishes (toggleable in settings), or an animated desktop **birdy** that flaps while your bots work and opens the app when you poke it.
+### Keep NEST running in the background
+The desktop wrapper can minimize to the taskbar and show notifications. `nest daemon` runs as a foreground process; use an OS service manager if you need it to survive logout or reboot. Services declared in `services.toml` are spawned and health-checked on loopback, with current lifecycle/status limits documented in the project plan.
 
-### Talk to your nest from anywhere
-A tiny daemon watches your remotes' inboxes — message it from Telegram or Slack and the reply lands back where you sent it. The GUI is one window with tabs; the backend settings are a single readable `settings.md` you can hand-edit or let the app manage.
+### Optional remote bridges
+The `remotes` package provides local inbox/outbox bridge scripts for Telegram and Slack. They require user-supplied configuration and credentials and run as local processes; they are not a hosted NEST service. The shell UI is one window with tabs, and user-facing settings live in readable local files.
 
 ## The tour in one breath
 
