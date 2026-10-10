@@ -124,14 +124,24 @@ directory), `--perch` (pick a harness explicitly).
   `ask` can't prompt in a headless run anywhere, so it always joins the
   deny side — the prompt still states the policy in words, and the receipt
   shows what was unreachable.
-- **`max_steps` is a hard budget.** Step peeps are counted; at the cap →
-  kill → `BudgetExceeded` on the receipt.
+- **`max_steps` is a hard budget.** Step peeps — harness work units —
+  are counted; at the cap → kill → `BudgetExceeded` on the receipt.
+- **`max_seconds` is the wall-clock budget.** Some perches never emit
+  Step peeps (echo, opencode), so `max_steps` can't trip on them —
+  the wall clock can. Default 600s; the kill emits a `TimedOut` peep
+  and lands as `BudgetExceeded`. Kills take the whole process group
+  (unix), so grandchildren can't hold the pipes open past the kill.
+- **Every run leaves a peep tape.** `<roost>/<id>.peeps.jsonl` is the
+  full event stream (one JSON per line, `ms` stamped) behind the
+  receipt's summary — replay it for audit, debugging, or feathering.
 - **Every attempt is a receipt.** Failed ladder runs land in the roost
   too — the activity log shows the whole fallback trail, not just the
   winner. The same holds for a `clutch`: a spawn failure lands as a
   `SpawnFailed` receipt instead of aborting the batch.
 - **Fallback is for failure, not taste.** The brood walks a route's
-  fallback chain only when a candidate doesn't finish `Done`.
+  fallback chain only when a candidate doesn't finish `Done` — and it
+  stops early on `failure_kind` `budget`/`denied`: a stopped run was a
+  real action, and the next bot wouldn't be a retry.
 
 ## Layout
 

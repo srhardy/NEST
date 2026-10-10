@@ -251,6 +251,8 @@ mod tests {
             started_ms: 1,
             finished_ms: 2,
             hard_won: false,
+            failure_kind: None,
+            peeps_path: None,
             tail: vec!["did the thing".into()],
         }
     }

@@ -29,6 +29,11 @@ pub struct AgentSpec {
     pub boss: bool,
     #[serde(default)]
     pub max_steps: Option<u32>,
+    /// Wall-clock run budget in seconds — the universal guardrail that
+    /// works on every perch, even ones that never emit Step peeps.
+    /// Runs longer than this are killed (defaults to 600).
+    #[serde(default)]
+    pub max_seconds: Option<u64>,
     /// Per-bot spend budget (preset or daily-NNNk) — surfaced to the
     /// prompt so the harness stays inside it; unknown shapes warn.
     #[serde(default)]

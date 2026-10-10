@@ -60,6 +60,8 @@ mod tests {
             started_ms: started,
             finished_ms: started + 1,
             hard_won: false,
+            failure_kind: None,
+            peeps_path: None,
             tail: vec![],
         }
     }

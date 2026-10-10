@@ -276,6 +276,9 @@ pub fn render_bot_md(bot: &Bot) -> String {
     if let Some(steps) = bot.max_steps {
         out.push_str(&format!("max_steps: {steps}\n"));
     }
+    if let Some(secs) = bot.max_seconds {
+        out.push_str(&format!("max_seconds: {secs}\n"));
+    }
     if let Some(budget) = &bot.budget {
         out.push_str(&format!("budget: {}\n", toml_string(budget)));
     }

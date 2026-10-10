@@ -441,13 +441,14 @@ function peepChip(peep, bot) {
   if (peep.kind === 'output' && !peep.text.trim()) return null;
   const c = document.createElement('span');
   const k = peep.kind;
-  c.className = 'lp' + (k === 'step' ? ' step' : k === 'done' ? ' done' : k === 'failed' || k === 'budget_exceeded' ? ' fail' : '');
+  c.className = 'lp' + (k === 'step' ? ' step' : k === 'done' ? ' done' : k === 'failed' || k === 'budget_exceeded' || k === 'timed_out' ? ' fail' : '');
   c.textContent =
     k === 'spawned' ? `${bot} hatched` :
     k === 'step' ? `⚙ step ${peep.n}` :
     k === 'done' ? `✔ ${bot} done` :
     k === 'failed' ? `✖ ${bot}: ${peep.error}` :
     k === 'budget_exceeded' ? `✖ step budget hit` :
+    k === 'timed_out' ? `✖ wall clock hit (${peep.seconds}s)` :
     k === 'ask' ? `? ${peep.tool} needs approval` : k;
   return c;
 }

@@ -21,6 +21,9 @@ pub enum Peep {
     Ask { tool: String },
     /// The step budget ran out — the run was stopped.
     BudgetExceeded { steps: u32 },
+    /// The wall-clock budget ran out — the run was stopped. Fires on
+    /// every perch, including ones that never emit Step peeps.
+    TimedOut { seconds: u64 },
     /// Finished cleanly.
     Done { code: i32 },
     /// Finished badly (non-zero exit, spawn failure, killed).

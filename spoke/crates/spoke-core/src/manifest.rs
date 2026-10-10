@@ -144,6 +144,11 @@ pub struct Bot {
     /// Step budget for a single run (Bob-style `steps:` guardrail).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
+    /// Wall-clock run budget in seconds — the guardrail that works on
+    /// harnesses that never report steps. The engine applies its own
+    /// default when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_seconds: Option<u64>,
     /// Per-bot spend budget — a preset name (concise | balanced | full)
     /// or a `daily-NNNk`-style cap. Consulted by the engine before a run;
     /// unknown shapes warn, never block.

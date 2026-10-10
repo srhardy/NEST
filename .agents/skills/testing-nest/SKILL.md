@@ -13,13 +13,14 @@ description: How to run and end-to-end test the NEST engine + web shell and the 
 
 ## Perches & deterministic outcomes
 - `echo` (builtin): prints prompt, exit 0 → every run `done`. `fail` (builtin): exit 1 → every run `failed`. Pass `--perch echo|fail` on CLI, or `"perch":"echo"` in POST bodies.
-- Steps/budget: only `Peep::Step` events increment the step counter; echo/opencode-style perches emit only `Output` → `max_steps` can't trip on them.
+- Steps/budget: only `Peep::Step` events increment the step counter; echo/opencode-style perches emit only `Output` → `max_steps` can't trip on them. `max_seconds` (default 600) is the wall-clock rail that works everywhere — a killed run emits `Peep::TimedOut` and lands `BudgetExceeded`/`failure_kind: budget`. Kills take the child's whole process group (unix).
 - Brood dispatch shares ONE perch across all candidates, so a hard-won (fail-then-succeed) dispatch needs per-agent failure driven by prompt content: drop an executable stub named `opencode` (or `claude`/`codex`) on PATH (e.g. `~/.local/bin`) that exits 1 when an arg contains a marker placed ONLY in the failing bot's agent body, else exits 0. `default_perch()` picks it automatically in UI and CLI.
 
 ## ~/.nest layout (home; cwd `.nest/` project dir shadows it — run from a clean cwd or pass `--home`/`NEST_HOME`)
 - `agents/<name>.md` — `---` YAML frontmatter (`name`, `job`, `boss: true`, `permissions`, `skills`, `max_steps`) + persona body. A `boss: true` bot suppresses the shell's first-run onboarding modal; `eggbot` is auto-seeded on first serve.
 - `routing.toml` — `[[route]] patterns = ["kw"] bot = "a" fallback = ["b"]` (matches on task substring, lowercase).
-- `roost/<receipt-id>.json` — every run writes one, including failures.
+- `roost/<receipt-id>.json` — every run writes one, including failures; `failure_kind` says why (spawn/exit/budget/denied).
+- `roost/<receipt-id>.peeps.jsonl` — the run's full event tape (one JSON per line, `ms` stamped); the receipt is just its summary.
 - `skills/<name>/SKILL.md` — feather output; frontmatter `name:`, `authored-by:`, `run:`.
 - No credentials needed anywhere: with no `providers.toml`, the forage router falls back to the echo provider (distill output = the prompt reflected back).
 
@@ -29,7 +30,7 @@ description: How to run and end-to-end test the NEST engine + web shell and the 
 - POST `chat: <id>` or `channel: <id>` as the FIRST line of the body → reply lands at `outbox/<id>.txt` and `GET /inbox/<remote>/<id>/reply` serves it (404 pending → 200). No such line → reply keyed under the returned `{"id"}` (task file stem).
 - IMPORTANT for curl fixtures: `-d 'chat: 42\n…'` sends a LITERAL `\n` — the whole body is one line and `reply_to` swallows everything after `chat: ` into the filename. Use bash ANSI quoting `-d $'chat: 42\n…'` for a real newline.
 - Caps (verified at de23545): body >64KiB → 413; ≥64 pending `inbox/*.md` → 429. Seed the inbox with ~80 dummy `.md` files and POST immediately — the watcher drains every ~3s so a marginal count can race below the cap.
-- Security probe done: `chat:`/`channel:` values are NOT name_ok'd like URL segments — `../` values escape `outbox/` when the task is dispatched (reported to lead as a finding; verify it's fixed before relying on it staying safe).
+- Security probe: `chat:`/`channel:` values now pass `name_ok` like URL segments — `../`, absolute, backslash, subdir, and dotted values get no outbox write (fixed; locked in by `webhook_traversal_chat_id_writes_no_outbox`).
 
 ## spoke registry (`spoke registry sync/show`)
 - `~/.spoke/registry` must NOT pre-exist as a non-git dir for the clone test — `rm -rf` it first (but check it's not a real checkout you want to keep).

@@ -1135,6 +1135,7 @@ fn bot_add(project: &Path, name: &str, job: &str, title: Option<&str>) -> Result
         permissions: Default::default(),
         boss: false,
         max_steps: None,
+        max_seconds: None,
         budget: None,
         routines: Vec::new(),
         egress: None,

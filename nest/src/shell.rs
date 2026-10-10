@@ -66,7 +66,10 @@ impl Run {
             Peep::Spawned { .. } => {
                 self.active.lock().unwrap().insert(bot.to_string());
             }
-            Peep::Done { .. } | Peep::Failed { .. } | Peep::BudgetExceeded { .. } => {
+            Peep::Done { .. }
+            | Peep::Failed { .. }
+            | Peep::BudgetExceeded { .. }
+            | Peep::TimedOut { .. } => {
                 self.active.lock().unwrap().remove(bot);
             }
             _ => {}
@@ -191,6 +194,7 @@ impl Interview {
             permissions: self.permissions(),
             boss: false,
             max_steps: Some(30),
+            max_seconds: None,
             budget: None,
             routines: Vec::new(),
             egress: Some("same-project".to_string()),
@@ -682,6 +686,7 @@ impl Shell {
             perch.as_ref(),
             agent,
             &self.cwd,
+            &self.dirs,
             |_| {},
         );
         let receipt_path = roost::record(&self.dirs.roost(), &receipt)?;
@@ -1001,10 +1006,15 @@ impl Shell {
                 Ok(mut h) => {
                     let run2 = run.clone();
                     let name = agent.name.clone();
-                    let r =
-                        hatchling::wait(&mut h, &task, perch.as_ref(), &agent, &cwd, move |peep| {
-                            run2.emit_peep(&name, peep)
-                        });
+                    let r = hatchling::wait(
+                        &mut h,
+                        &task,
+                        perch.as_ref(),
+                        &agent,
+                        &cwd,
+                        &dirs,
+                        move |peep| run2.emit_peep(&name, peep),
+                    );
                     r
                 }
                 Err(e) => {
@@ -1132,6 +1142,8 @@ impl Shell {
                         started_ms: now,
                         finished_ms: now,
                         hard_won: false,
+                        failure_kind: None,
+                        peeps_path: None,
                         tail,
                     }
                 }
@@ -1149,6 +1161,8 @@ impl Shell {
                         started_ms: now,
                         finished_ms: now,
                         hard_won: false,
+                        failure_kind: Some(hatchling::FailureKind::Exit),
+                        peeps_path: None,
                         tail,
                     }
                 }
@@ -1166,6 +1180,8 @@ impl Shell {
                         started_ms: now,
                         finished_ms: now,
                         hard_won: false,
+                        failure_kind: Some(hatchling::FailureKind::Spawn),
+                        peeps_path: None,
                         tail: vec![err],
                     }
                 }
@@ -1313,6 +1329,7 @@ impl Shell {
                                             mode: None,
                                             boss: false,
                                             max_steps: None,
+                                            max_seconds: None,
                                             permissions: Default::default(),
                                             skills: vec![],
                                             mcp: vec![],
@@ -1340,6 +1357,7 @@ impl Shell {
                         mode: None,
                         boss: false,
                         max_steps: None,
+                        max_seconds: None,
                         permissions: Default::default(),
                         skills: vec![],
                         mcp: vec![],
@@ -1988,6 +2006,7 @@ fn route<'a>(
                 permissions: agent.permissions.clone(),
                 boss: agent.boss,
                 max_steps: agent.max_steps,
+                max_seconds: agent.max_seconds,
                 budget: agent.budget.clone(),
                 routines: agent.routines.clone(),
                 egress: agent.egress.clone(),

@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use spoke_core::manifest::ToolPolicy;
 
+use crate::hatchling::FailureKind;
 use crate::home::NestDirs;
 use crate::peep::Peep;
 use crate::spec::AgentSpec;
@@ -45,6 +46,29 @@ pub trait Perch: Send + Sync {
     fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch;
     /// One output line → one peep. `None` skips the line.
     fn parse(&self, line: &str) -> Option<Peep>;
+    /// Why did a failed run fail? The default sniffs the output tail for
+    /// the usual "you weren't allowed" markers — `Denied` vs `Exit` is
+    /// what tells the brood's ladder whether the next candidate is a
+    /// retry or a different action. Perches with richer exit signals
+    /// (structured error events, known exit codes) can override.
+    fn failure_kind(&self, tail: &[String]) -> FailureKind {
+        const DENIED: [&str; 5] = [
+            "permission denied",
+            "operation not permitted",
+            "access denied",
+            "not permitted",
+            "not allowed",
+        ];
+        let denied = tail.iter().any(|line| {
+            let line = line.to_lowercase();
+            DENIED.iter().any(|marker| line.contains(marker))
+        });
+        if denied {
+            FailureKind::Denied
+        } else {
+            FailureKind::Exit
+        }
+    }
     /// The one-click install command (run via `sh -c`), when this perch
     /// can install itself. Builtin stubs return `None`.
     fn install_cmd(&self) -> Option<&'static str> {
@@ -522,6 +546,7 @@ mod tests {
             mode: None,
             boss: false,
             max_steps: None,
+            max_seconds: None,
             permissions: perms.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             skills: vec![],
             mcp: vec![],

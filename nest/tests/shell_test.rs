@@ -776,33 +776,51 @@ fn webhook_traversal_chat_id_writes_no_outbox() {
         thread::sleep(Duration::from_millis(50));
     }
 
-    // a chat id that tries to climb out of the outbox gets no reply file
-    let raw = http_headers(
-        port,
-        "POST",
-        "/inbox/hook",
-        Some("chat: ../../../evil\nescape attempt"),
-        &[("Authorization", "Bearer s3cret")],
-    );
-    let v: serde_json::Value = serde_json::from_str(&body(&raw)).unwrap_or_default();
-    let id = v["id"].as_str().expect("no task id").to_string();
+    // chat ids that try to climb out of the outbox get no reply file —
+    // traversal, absolute paths, windows backslashes, subdirs, and dotted
+    // names all fail name_ok and are answered nowhere
+    let mut ids = Vec::new();
+    for bad in [
+        "chat: ../../../evil",
+        "chat: /abs/evil",
+        "chat: ..\\..\\evil",
+        "chat: sub/dir",
+        "chat: name.with.dots",
+    ] {
+        let raw = http_headers(
+            port,
+            "POST",
+            "/inbox/hook",
+            Some(&format!("{bad}\nescape attempt")),
+            &[("Authorization", "Bearer s3cret")],
+        );
+        let v: serde_json::Value = serde_json::from_str(&body(&raw)).unwrap_or_default();
+        ids.push(v["id"].as_str().expect("no task id").to_string());
+    }
 
-    // wait for the watcher to consume the task
-    let done_file = remote.join("inbox/done").join(format!("{id}.md"));
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !done_file.exists() {
-        assert!(Instant::now() < deadline, "task never dispatched");
-        thread::sleep(Duration::from_millis(300));
+    // wait for the watcher to consume every task
+    let deadline = Instant::now() + Duration::from_secs(30);
+    for id in &ids {
+        let done_file = remote.join("inbox/done").join(format!("{id}.md"));
+        while !done_file.exists() {
+            assert!(Instant::now() < deadline, "task never dispatched");
+            thread::sleep(Duration::from_millis(300));
+        }
     }
     // give the reply writer a beat, then prove nothing escaped (or landed)
     thread::sleep(Duration::from_millis(500));
     assert!(!home.join("evil.txt").exists(), "traversal write landed");
-    let outbox: Vec<_> = std::fs::read_dir(remote.join("outbox"))
+    let outbox = remote.join("outbox");
+    assert!(
+        !outbox.join("..\\..\\evil.txt").exists(),
+        "backslash-named write landed"
+    );
+    let entries: Vec<_> = std::fs::read_dir(&outbox)
         .map(|es| es.flatten().collect())
         .unwrap_or_default();
     assert!(
-        outbox.is_empty(),
-        "reply written for bad chat id: {outbox:?}"
+        entries.is_empty(),
+        "reply written for bad chat id: {entries:?}"
     );
 }
 

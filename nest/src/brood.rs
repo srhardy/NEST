@@ -11,7 +11,7 @@ use std::path::Path;
 use anyhow::{bail, Result};
 use spoke_core::manifest::Route;
 
-use crate::hatchling::{self, Receipt, Status};
+use crate::hatchling::{self, FailureKind, Receipt, Status};
 use crate::peep::Peep;
 use crate::perch::Perch;
 use crate::spec::AgentSpec;
@@ -122,7 +122,7 @@ impl Brood {
         for target in candidates {
             let agent = &target.agent;
             let receipt = match hatchling::hatch(agent, task, perch, cwd, dirs) {
-                Ok(mut h) => hatchling::wait(&mut h, task, perch, agent, cwd, |peep| {
+                Ok(mut h) => hatchling::wait(&mut h, task, perch, agent, cwd, dirs, |peep| {
                     on_peep(&agent.name, peep)
                 }),
                 Err(e) => {
@@ -136,6 +136,13 @@ impl Brood {
                 }
             };
             let status = receipt.status;
+            // a budget kill or a denial stops the ladder: the run happened
+            // and was stopped — handing the same task to the next bot
+            // wouldn't retry the failure, it'd be a different action.
+            let stop = matches!(
+                receipt.failure_kind,
+                Some(FailureKind::Budget) | Some(FailureKind::Denied)
+            );
             attempts.push((target.via.clone(), receipt));
             if status == Status::Done {
                 let mut winner = attempts.pop().map(|(_, r)| r).unwrap();
@@ -145,6 +152,9 @@ impl Brood {
                     winner: Some(winner),
                     attempts,
                 });
+            }
+            if stop {
+                break;
             }
         }
         Ok(Dispatch {
@@ -187,6 +197,7 @@ mod tests {
             mode: None,
             boss,
             max_steps: None,
+            max_seconds: None,
             permissions: BTreeMap::new(),
             skills: vec![],
             mcp: vec![],

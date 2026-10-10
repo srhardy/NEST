@@ -7,7 +7,7 @@ use std::path::Path;
 
 use nest::brood::{Brood, Via};
 use nest::clutch;
-use nest::hatchling::{self, Status};
+use nest::hatchling::{self, FailureKind, Status};
 use nest::home::NestDirs;
 use nest::peep::Peep;
 use nest::perch::{perch_named, Echo, Fail, Perch};
@@ -33,6 +33,7 @@ fn spec_with(name: &str, max_steps: Option<u32>) -> AgentSpec {
         mode: None,
         boss: false,
         max_steps,
+        max_seconds: None,
         permissions: BTreeMap::new(),
         skills: vec![],
         mcp: vec![],
@@ -53,7 +54,7 @@ fn echo_hatch_runs_to_done_and_leaves_a_receipt() {
     let mut h = hatchling::hatch(&agent, "say hi", &perch, cwd, &dirs).unwrap();
     let mut saw_spawned = false;
     let mut saw_output = false;
-    let receipt = hatchling::wait(&mut h, "say hi", &perch, &agent, cwd, |p| {
+    let receipt = hatchling::wait(&mut h, "say hi", &perch, &agent, cwd, &dirs, |p| {
         saw_spawned |= matches!(p, Peep::Spawned { .. });
         saw_output |= matches!(p, Peep::Output { .. });
     });
@@ -73,7 +74,7 @@ fn fail_perch_records_failed() {
     let agent = spec_with("doomed", None);
     let perch = Fail;
     let mut h = hatchling::hatch(&agent, "try", &perch, tmp.path(), &dirs).unwrap();
-    let receipt = hatchling::wait(&mut h, "try", &perch, &agent, tmp.path(), |_| {});
+    let receipt = hatchling::wait(&mut h, "try", &perch, &agent, tmp.path(), &dirs, |_| {});
     assert_eq!(receipt.status, Status::Failed);
 }
 
@@ -112,12 +113,171 @@ fn step_budget_kills_the_run() {
     let perch = Stepper;
     let mut h = hatchling::hatch(&agent, "loop", &perch, tmp.path(), &dirs).unwrap();
     let mut budget_hit = false;
-    let receipt = hatchling::wait(&mut h, "loop", &perch, &agent, tmp.path(), |p| {
+    let receipt = hatchling::wait(&mut h, "loop", &perch, &agent, tmp.path(), &dirs, |p| {
         budget_hit |= matches!(p, Peep::BudgetExceeded { .. });
     });
     assert!(budget_hit);
     assert_eq!(receipt.status, Status::BudgetExceeded);
+    assert_eq!(receipt.failure_kind, Some(FailureKind::Budget));
     assert!(receipt.steps >= 2);
+}
+
+/// A perch that sleeps forever — the wall-clock budget must kill runs
+/// even when no Step peeps ever arrive (output-only perches included).
+struct Sleeper;
+impl Perch for Sleeper {
+    fn name(&self) -> &'static str {
+        "sleeper"
+    }
+    fn binary(&self) -> &'static str {
+        ""
+    }
+    fn launch(&self, _a: &AgentSpec, _t: &str, _d: &NestDirs) -> nest::perch::Launch {
+        nest::perch::Launch {
+            program: "sh".into(),
+            args: vec!["-c".into(), "sleep 60".into()],
+            env: BTreeMap::new(),
+        }
+    }
+    fn parse(&self, line: &str) -> Option<Peep> {
+        Some(Peep::Output { text: line.into() })
+    }
+}
+
+#[test]
+fn wall_clock_budget_kills_silent_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
+    let mut agent = spec_with("sleeper", None);
+    agent.max_seconds = Some(1);
+    let perch = Sleeper;
+    let mut h = hatchling::hatch(&agent, "wait", &perch, tmp.path(), &dirs).unwrap();
+    let mut timed_out = false;
+    let receipt = hatchling::wait(&mut h, "wait", &perch, &agent, tmp.path(), &dirs, |p| {
+        timed_out |= matches!(p, Peep::TimedOut { seconds: 1 });
+    });
+    assert!(timed_out, "a TimedOut peep must be emitted");
+    assert_eq!(receipt.status, Status::BudgetExceeded);
+    assert_eq!(receipt.failure_kind, Some(FailureKind::Budget));
+    // killed near the 1s cap, not after the child's 60s sleep
+    assert!(receipt.finished_ms - receipt.started_ms < 10_000);
+}
+
+#[test]
+fn wait_writes_the_peep_tape_next_to_the_receipt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path();
+    let dirs = NestDirs::resolve(cwd, Some(cwd.to_path_buf()));
+    let agent = spec_with("echobot", None);
+    let perch = Echo;
+    let mut h = hatchling::hatch(&agent, "say hi", &perch, cwd, &dirs).unwrap();
+    let receipt = hatchling::wait(&mut h, "say hi", &perch, &agent, cwd, &dirs, |_| {});
+    assert_eq!(receipt.status, Status::Done);
+
+    let tape = receipt.peeps_path.expect("receipt names its peep tape");
+    assert_eq!(
+        tape,
+        dirs.roost().join(format!("{}.peeps.jsonl", receipt.id))
+    );
+    let text = fs::read_to_string(&tape).unwrap();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert!(lines.len() >= 3, "spawned + output + done at minimum");
+    assert!(lines.iter().all(|l| l["ms"].as_u64().is_some()));
+    assert_eq!(lines[0]["kind"], "spawned");
+    assert_eq!(lines.last().unwrap()["kind"], "done");
+    assert!(lines.iter().any(|l| l["kind"] == "output"));
+}
+
+/// A perch whose stderr looks like a sandbox denial — the classifier
+/// must read the tail, not just the exit code.
+struct Denied;
+impl Perch for Denied {
+    fn name(&self) -> &'static str {
+        "denied"
+    }
+    fn binary(&self) -> &'static str {
+        ""
+    }
+    fn launch(&self, _a: &AgentSpec, _t: &str, _d: &NestDirs) -> nest::perch::Launch {
+        nest::perch::Launch {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "echo 'bash: permission denied by sandbox' >&2; exit 1".into(),
+            ],
+            env: BTreeMap::new(),
+        }
+    }
+    fn parse(&self, line: &str) -> Option<Peep> {
+        Some(Peep::Output { text: line.into() })
+    }
+}
+
+#[test]
+fn denial_markers_classify_the_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
+    let agent = spec_with("sandboxed", None);
+    let perch = Denied;
+    let mut h = hatchling::hatch(&agent, "try", &perch, tmp.path(), &dirs).unwrap();
+    let receipt = hatchling::wait(&mut h, "try", &perch, &agent, tmp.path(), &dirs, |_| {});
+    assert_eq!(receipt.status, Status::Failed);
+    assert_eq!(receipt.failure_kind, Some(FailureKind::Denied));
+}
+
+/// Dispatch runs one perch across candidates, so the scripted perch
+/// picks its behavior off the agent name — same trick as brood.rs tests.
+struct ScriptedGate;
+impl Perch for ScriptedGate {
+    fn name(&self) -> &'static str {
+        "gate"
+    }
+    fn binary(&self) -> &'static str {
+        ""
+    }
+    fn launch(&self, agent: &AgentSpec, _t: &str, _d: &NestDirs) -> nest::perch::Launch {
+        nest::perch::Launch {
+            program: "sh".into(),
+            args: if agent.name == "denied-bot" {
+                vec![
+                    "-c".into(),
+                    "echo 'operation not permitted' >&2; exit 1".into(),
+                ]
+            } else {
+                vec!["-c".into(), "echo ok".into()]
+            },
+            env: BTreeMap::new(),
+        }
+    }
+    fn parse(&self, line: &str) -> Option<Peep> {
+        Some(Peep::Output { text: line.into() })
+    }
+}
+
+#[test]
+fn brood_stops_the_ladder_on_denied() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
+    let agents = vec![spec_with("denied-bot", None), spec_with("backup", None)];
+    let routes = vec![spoke_core::manifest::Route {
+        patterns: vec!["task".into()],
+        bot: "denied-bot".into(),
+        fallback: vec!["backup".into()],
+    }];
+    let brood = Brood::new(agents, routes);
+    let dispatch = brood
+        .dispatch("do the task", &ScriptedGate, tmp.path(), &dirs, |_, _| {})
+        .unwrap();
+    // the denial stops the ladder — backup was never even hatched
+    assert!(dispatch.winner.is_none());
+    assert_eq!(dispatch.attempts.len(), 1);
+    assert_eq!(
+        dispatch.attempts[0].1.failure_kind,
+        Some(FailureKind::Denied)
+    );
 }
 
 #[test]
@@ -148,7 +308,7 @@ fn brood_falls_back_when_first_candidate_fails() {
                 &echo
             };
             let mut h = hatchling::hatch(&target.agent, "t", perch, tmp.path(), &dirs).unwrap();
-            let r = hatchling::wait(&mut h, "t", perch, &target.agent, tmp.path(), |_| {});
+            let r = hatchling::wait(&mut h, "t", perch, &target.agent, tmp.path(), &dirs, |_| {});
             attempts.push((target.agent.name.clone(), r.status));
             if r.status == Status::Done {
                 winner = Some(r);
@@ -179,7 +339,7 @@ fn egress_advisory_does_not_treat_url_text_as_a_network_breach() {
         &dirs,
     )
     .unwrap();
-    let receipt = hatchling::wait(&mut h, "fetch", &perch, &agent, tmp.path(), |_| {});
+    let receipt = hatchling::wait(&mut h, "fetch", &perch, &agent, tmp.path(), &dirs, |_| {});
     assert_eq!(receipt.status, Status::Done);
 }
 
@@ -195,7 +355,15 @@ fn subagent_spool_is_cleaned_up() {
     let spool = tmp.path().join(".nest").join("spool").join(&h.id);
     std::fs::create_dir_all(&spool).unwrap();
     std::fs::write(spool.join("scratch.txt"), "notes").unwrap();
-    let receipt = hatchling::wait(&mut h, "deliberate", &perch, &agent, tmp.path(), |_| {});
+    let receipt = hatchling::wait(
+        &mut h,
+        "deliberate",
+        &perch,
+        &agent,
+        tmp.path(),
+        &dirs,
+        |_| {},
+    );
     assert_eq!(receipt.status, Status::Done);
     assert!(!spool.exists(), "subagent spool must be cleaned");
 }

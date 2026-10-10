@@ -114,6 +114,9 @@ fn peep_line(bot: &str, peep: &Peep) -> Option<String> {
         Peep::BudgetExceeded { steps } => {
             Some(format!("  ✖ step budget exceeded ({steps}) — stopping"))
         }
+        Peep::TimedOut { seconds } => {
+            Some(format!("  ✖ wall clock exceeded ({seconds}s) — stopping"))
+        }
         Peep::Done { .. } => Some(format!("✔ {bot} done")),
         Peep::Failed { error } => Some(format!("✖ {bot} failed: {error}")),
     }
@@ -158,7 +161,7 @@ fn run_bot(
     let perch = pick_perch(cli)?;
     let mut h = hatchling::hatch(agent, task, perch.as_ref(), cwd, dirs)?;
     let name = agent.name.clone();
-    let receipt = hatchling::wait(&mut h, task, perch.as_ref(), agent, cwd, |peep| {
+    let receipt = hatchling::wait(&mut h, task, perch.as_ref(), agent, cwd, dirs, |peep| {
         if let Some(line) = peep_line(&name, peep) {
             println!("{line}");
         }

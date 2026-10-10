@@ -50,6 +50,7 @@ memory = ["Templates live in the catalog"]
 mode = "primary"                 # primary | subagent — subagents spool on demand
 boss = true                      # at most one — the orchestrator/default receiver
 max_steps = 30                   # per-run step budget
+max_seconds = 900                # per-run wall-clock budget (engine default: 600)
 permissions = { bash = "ask", edit = "ask", read = "allow" }   # allow | ask | deny per tool
 
 # Routing — the Boss's dispatch table: patterns -> bot + escalation ladder.
@@ -103,6 +104,7 @@ enabled = true
 | `bots[].mode` | `primary`/`subagent` | no | — | Lifecycle: subagents spool as delegated subtasks and auto-clean |
 | `bots[].boss` | bool | no | `false` | The orchestrator — default receiver for un-routed intents; max one |
 | `bots[].max_steps` | int | no | — | Per-run step budget |
+| `bots[].max_seconds` | int | no | engine default 600 | Per-run wall-clock budget — works on harnesses that never report steps |
 | `bots[].permissions` | map tool→`allow`/`ask`/`deny` | no | `{}` | Per-tool policy rendered into the agent frontmatter |
 | `routing[]` | table[] | no | `[]` | Nest: rendered to `.nest/routing.toml` |
 | `routing[].patterns` | string[] | yes | — | Keywords/patterns that trigger the route |
