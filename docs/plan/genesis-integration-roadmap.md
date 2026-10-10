@@ -51,25 +51,27 @@ process group and the post-kill drain is bounded (`DRAIN_GRACE`).
 
 ---
 
-## Phase 1 — The chief (Genesis's core idea)
+## Phase 1 — The chief (Genesis's core idea) — ✅ shipped
 
 *Replace keyword routing with an LLM planner; keep routing.toml as the
 deterministic fallback.*
 
 | # | Change | Files | Notes |
 |---|--------|-------|-------|
-| 1.1 | **`chief.rs`** — new module. `plan(task, roster, memory_ctx, router) -> ChiefPlan` where `ChiefPlan = Answer{text} \| Delegations{Vec<Delegate>} \| AskApproval{Vec<tool>}`. Calls `forage::Router` (cheapest provider) with a structured prompt (roster = name+job, not persona), parses JSON-ish reply, falls back gracefully on bad output. | `chief.rs` (new), `lib.rs` | Delegation is data, not a new subsystem — CrewAI insight: delegating IS just the next dispatch. |
-| 1.2 | **`brood.plan_chief()`** — chief delegates → those agents in order, then routing.toml candidates, then boss. `Via::Chief` variant on receipts. | `brood.rs` | Unmatched tasks still fall back to keyword routes → boss — chief is the front, not the only path. |
-| 1.3 | **Pre-launch approval.** Bot's `permissions` containing `ask` → shell shows an approval card (the asks + the task) *before* hatch; approve once → those tools promote ask→allow for this run only. `Peep::Ask` gets emitted at gate time, not mid-run (perches can't pause — pre-launch is the honest gate). | `spec.rs`, `shell.rs`, `main.rs` | Removes today's silent ask→deny on every perch. CLI: `--yes` flag or interactive confirm. |
-| 1.4 | **Sessions.** `Launch` gains `session_id: Option<String>`; perches that support resume pass it (`claude --resume`, `codex exec resume`, `opencode --session`). Transcript store keeps the harness session id per chat → real multi-turn instead of context-free re-hatches. | `perch.rs`, `hatchling.rs`, `shell.rs` | README's own known gap; echo/fail ignore it. |
-| 1.5 | **Chief in the UI.** Chat input defaults to `/api/chief` (was: `/api/brood`); roster stays for direct per-bot work and Expert mode. The boss bird becomes the visible assistant face. | `shell.rs`, `web/index.html` | User sees one assistant; the cast is the trace. |
+| 1.1 | **`chief.rs`** — new module. `plan(task, context, roster, router) -> ChiefPlan` where `ChiefPlan = Answer \| Delegations \| Undecided`. Calls `forage::Router` (cheapest provider) with a structured prompt (roster = name+job, not persona), parses the JSON reply, `Undecided` on bad output or no provider. | `chief.rs` (new), `lib.rs` | `AskApproval` from the sketch became `Undecided` + the launch gate — approvals live on the chosen bot's permissions, not in the plan. Delegation is data, not a new subsystem. |
+| 1.2 | **`brood.plan_chief()`** — chief delegates → those agents in order (`Via::Chief`, per-delegate task overrides on `Target.task`), then routing.toml candidates, then boss. | `brood.rs` | Unknown/duplicate delegations are skipped; the deterministic plan trails so a bad delegation degrades to routing. |
+| 1.3 | **Pre-launch approval.** `agent.ask_tools()` + `promote_approved_asks(approved)`; unapproved asks emit `Peep::Ask` at gate time and stay denied (perches can't pause — pre-launch is the honest gate). Shell accepts `approved_tools` on `/api/hatch`, `/api/brood`, `/api/sessions/send`; CLI: `--yes` flag or tty confirm, headless denies. | `spec.rs`, `brood.rs`, `shell.rs`, `main.rs` | Ask→deny is no longer silent — the peep stream shows what was withheld. UI approval cards are Phase 3.3. |
+| 1.4 | **Sessions.** `hatch`/`perch.launch` gain `session: Option<&str>`; claude passes `--resume`, codex `exec resume`, opencode `--session`. Perches surface the harness's id as `Peep::Session` → `Receipt.session` → `transcript.harness_session` → next send resumes. | `peep.rs`, `perch.rs`, `hatchling.rs`, `shell.rs` | Claude: init event `session_id`; codex: `thread.started.thread_id`; opencode/pi/echo/fail: resume flag only or none. Real multi-turn instead of context-free re-hatches. |
+| 1.5 | **Chief in the UI.** `/api/sessions/send` with `bot: "nest"` (the default chat bot) goes through `start_chief`: plan → answer as a synthetic receipt (`agent: "chief"`) or delegate via `dispatch_full`. Roster stays for per-bot work; `/api/brood` keeps deterministic routing (Expert). | `shell.rs`, `web/index.html` | User sees one assistant; the cast is the trace. |
 
-**Tests:** `chief.rs` (plan parsing incl. malformed output → fallback);
-`brood.rs` (chief order beats routes); `shell_test.rs` (approval gate blocks
-then releases a run). Deterministic: forage router already has `echo`/`fail`
-stubs — add a `scripted` forage for plan tests.
-**Merge gate:** `nest brood "…"` uses chief→route→boss ordering with real
-providers disabled (echo forage) — proves no-LLM path still works.
+**Tests:** `chief.rs` (plan parsing incl. malformed output → `Undecided`,
+echo-forage → `Undecided`, prompt excludes persona bodies); `brood.rs`
+(chief ordering, dedup/unknown skips, ask→Ask-peep and promote); `perch.rs`
+(resume flags + session-id parsing per perch); `spine_test.rs` (receipt
+carries session); `shell_test.rs` (chief answers directly, delegates,
+undecided→routes; `approved_tools` accepted).
+**Merge gate:** met — `nest brood "…"` plans chief-first and Undecides into
+routing when no provider is configured; 103 nest tests green.
 
 ---
 

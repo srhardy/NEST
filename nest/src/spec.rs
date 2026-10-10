@@ -61,6 +61,26 @@ impl AgentSpec {
     pub fn title(&self) -> &str {
         self.title.as_deref().unwrap_or(&self.name)
     }
+
+    /// Tools this bot may use only with a human's ok — the approval
+    /// gate inspects these before a hatch.
+    pub fn ask_tools(&self) -> Vec<String> {
+        self.permissions
+            .iter()
+            .filter(|(_, policy)| **policy == ToolPolicy::Ask)
+            .map(|(tool, _)| tool.clone())
+            .collect()
+    }
+
+    /// Promote `ask`→`allow` for tools in `approved`. Perches already
+    /// treat remaining asks as deny, so promotion is the whole gate.
+    pub fn promote_approved_asks(&mut self, approved: &std::collections::BTreeSet<String>) {
+        for tool in approved {
+            if self.permissions.get(tool) == Some(&ToolPolicy::Ask) {
+                self.permissions.insert(tool.clone(), ToolPolicy::Allow);
+            }
+        }
+    }
 }
 
 /// Parse `---\n<yaml>\n---\n<body>` into an `AgentSpec`.

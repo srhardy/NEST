@@ -77,8 +77,12 @@ perch-like crate over HTTP).
 
 Ordered by severity:
 
-1. **`Peep::Ask` is dead code** — defined, rendered in `main.rs`, never
-   emitted by any perch or the engine. The approval path is entirely absent.
+1. **`Peep::Ask` is dead code** — ~~defined, rendered in `main.rs`, never
+   emitted by any perch or the engine. The approval path is entirely
+   absent.~~ **Fixed (Phase 1):** the launch-time gate emits `Ask` peeps
+   for every unapproved `ask`-permission tool before hatch; `approved_tools`
+   on the API or `--yes`/tty-confirm on the CLI promotes them to allow for
+   that run only. UI approval cards remain Phase 3.3.
 2. **`max_steps` doesn't work on most perches.** ~~Only `Peep::Step`
    increments the counter; `echo`, `opencode`, and parts of `pi` emit only
    `Output`, so budget enforcement silently never trips.~~ **Fixed (Phase
@@ -98,15 +102,22 @@ Ordered by severity:
    perch); `dispatch` only climbs on spawn/exit and stops on budget/denied.
    Bonus caught by the new tests: `child.kill()` left grandchildren holding
    the pipes — kills now take the whole process group (unix).
-6. **Keyword routing is brittle** — substring containment; a paraphrased
+6. **Keyword routing is brittle** — ~~substring containment; a paraphrased
    task falls to the boss, and a task matching two routes tries both bots'
-   full fallback chains.
+   full fallback chains.~~ **Addressed (Phase 1):** `chief.rs` plans over
+   the roster via the forage router — chat and `nest brood` go
+   chief→routes→boss; routing.toml remains the deterministic fallback
+   (`Undecided`) and the Expert `/api/brood` path.
 7. **Perch parsing is fragile** — each perch hand-parses one CLI's output
    format (`stream-json`, `--json` JSONL, plain lines). CLI upgrades can
    silently degrade steps/output parsing with no detection.
-8. **Session continuity is thin** — transcripts persist but continuation
+8. **Session continuity is thin** — ~~transcripts persist but continuation
    "varies by perch" (README's own words): no harness session-resume flags
-   are passed, so multi-turn chats restart context each hatch.
+   are passed, so multi-turn chats restart context each hatch.~~ **Fixed
+   (Phase 1):** perches surface the harness's id as `Peep::Session`
+   (claude init event, codex `thread.started`) → `Receipt.session` →
+   `transcript.harness_session` → the next send passes it back
+   (`claude --resume`, `codex exec resume`, `opencode --session`).
 9. **Webhook reply path traversal — verify.** `chat:`/`channel:` values now
    pass `name_ok()` before becoming outbox filenames (line ~1398) — the
    finding from the testing skill is patched in this tree. **Locked in

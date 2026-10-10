@@ -449,7 +449,8 @@ function peepChip(peep, bot) {
     k === 'failed' ? `✖ ${bot}: ${peep.error}` :
     k === 'budget_exceeded' ? `✖ step budget hit` :
     k === 'timed_out' ? `✖ wall clock hit (${peep.seconds}s)` :
-    k === 'ask' ? `? ${peep.tool} needs approval` : k;
+    k === 'ask' ? `? ${peep.tool} needs approval` :
+    k === 'session' ? `↔ session ${peep.id}` : k;
   return c;
 }
 

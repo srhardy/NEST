@@ -27,7 +27,7 @@ pub fn run(
         for task in tasks {
             let tx = tx.clone();
             scope.spawn(move || {
-                let receipt = match hatchling::hatch(agent, task, perch, cwd, dirs) {
+                let receipt = match hatchling::hatch(agent, task, perch, cwd, dirs, None) {
                     Ok(mut h) => hatchling::wait(&mut h, task, perch, agent, cwd, dirs, |_| {}),
                     Err(e) => Receipt::spawn_failed(agent, task, perch, &format!("{e:#}")),
                 };

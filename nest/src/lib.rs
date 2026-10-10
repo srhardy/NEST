@@ -21,6 +21,7 @@
 //!   isn't done.
 
 pub mod brood;
+pub mod chief;
 pub mod clutch;
 pub mod feather;
 pub mod forage;

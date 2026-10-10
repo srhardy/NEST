@@ -11,8 +11,9 @@ events, collect results, no control plane. A unified provider layer
 |---|---|
 | **perch** | a wrapper around one agent CLI (`claude-code`, `codex`, `opencode`, `pi`, plus builtin `echo`/`fail` stubs) — each harness gets a perch |
 | **hatchling** | a running bot instance — an egg hatches into a bot |
-| **peep** | lifecycle events streamed off a hatchling (`spawned`, `output`, `step`, `ask`, `budget_exceeded`, `done`, `failed`) — the single stream the shell and the future watch-it-think dashboard render |
+| **peep** | lifecycle events streamed off a hatchling (`spawned`, `output`, `step`, `session`, `ask`, `budget_exceeded`, `timed_out`, `done`, `failed`) — the single stream the shell and the future watch-it-think dashboard render |
 | **roost** | where finished runs rest: JSON receipts in `~/.nest/roost/` — the activity log |
+| **chief** | the front door: an LLM planner over the roster (via the forage router) that answers directly, delegates to bots, or undecides into the routes — chat and `nest brood` go through it |
 | **brood** | the dispatch council: routes a task to the right bot via `.nest/routing.toml`, falls back up the ladder when one fails, and defers to the boss for everything unmatched |
 | **clutch** | a batch of hatchlings run in parallel (the council pattern's primitive) |
 | **forage** | the provider layer — prompt in, completion out (echo stub + any local CLI today; the free-tier failover proxy plugs in later) |
@@ -37,9 +38,10 @@ Everything Spoke projects, the engine consumes:
 - **Roster** — every bot as an animated bird (idle / thinking / working /
   waiting / stuck / done); each bot owns a colour in the `multi` theme,
   and every roster bot gets its own run-history tab (task, chat, test-drive).
-- **Ask the nest** — chat driving `brood` dispatch; clicking a roster bot
-  chats it directly via `hatch`. Peeps stream live over SSE as loop
-  chips — the watch-it-think view.
+- **Ask the nest** — chat through the chief: it answers directly or
+  delegates (peeps still stream the roster as the inspectable trace);
+  clicking a roster bot chats it directly via `hatch`. Peeps stream live
+  over SSE as loop chips — the watch-it-think view.
 - **Activity** — the roost's receipts.
 - **Settings** — detected perches, power-policy toggles, and the real
   `<home>/settings.md`, editable in place.

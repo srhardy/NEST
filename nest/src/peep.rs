@@ -17,6 +17,9 @@ pub enum Peep {
     /// A unit of work (a tool call, an assistant turn — whatever the
     /// harness counts as a step).
     Step { n: u32, label: String },
+    /// The harness reported its conversation/session id — store it to
+    /// resume the next turn instead of starting cold.
+    Session { id: String },
     /// A tool the bot wants needs approval; headless runs deny it.
     Ask { tool: String },
     /// The step budget ran out — the run was stopped.

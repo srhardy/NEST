@@ -51,7 +51,7 @@ fn echo_hatch_runs_to_done_and_leaves_a_receipt() {
     let dirs = NestDirs::resolve(cwd, Some(cwd.to_path_buf()));
     let agent = spec_with("echobot", None);
     let perch = Echo;
-    let mut h = hatchling::hatch(&agent, "say hi", &perch, cwd, &dirs).unwrap();
+    let mut h = hatchling::hatch(&agent, "say hi", &perch, cwd, &dirs, None).unwrap();
     let mut saw_spawned = false;
     let mut saw_output = false;
     let receipt = hatchling::wait(&mut h, "say hi", &perch, &agent, cwd, &dirs, |p| {
@@ -73,7 +73,7 @@ fn fail_perch_records_failed() {
     let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
     let agent = spec_with("doomed", None);
     let perch = Fail;
-    let mut h = hatchling::hatch(&agent, "try", &perch, tmp.path(), &dirs).unwrap();
+    let mut h = hatchling::hatch(&agent, "try", &perch, tmp.path(), &dirs, None).unwrap();
     let receipt = hatchling::wait(&mut h, "try", &perch, &agent, tmp.path(), &dirs, |_| {});
     assert_eq!(receipt.status, Status::Failed);
 }
@@ -87,7 +87,13 @@ impl Perch for Stepper {
     fn binary(&self) -> &'static str {
         ""
     }
-    fn launch(&self, _a: &AgentSpec, _t: &str, _d: &NestDirs) -> nest::perch::Launch {
+    fn launch(
+        &self,
+        _a: &AgentSpec,
+        _t: &str,
+        _d: &NestDirs,
+        _s: Option<&str>,
+    ) -> nest::perch::Launch {
         nest::perch::Launch {
             program: "sh".into(),
             args: vec![
@@ -111,7 +117,7 @@ fn step_budget_kills_the_run() {
     let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
     let agent = spec_with("loopy", Some(2));
     let perch = Stepper;
-    let mut h = hatchling::hatch(&agent, "loop", &perch, tmp.path(), &dirs).unwrap();
+    let mut h = hatchling::hatch(&agent, "loop", &perch, tmp.path(), &dirs, None).unwrap();
     let mut budget_hit = false;
     let receipt = hatchling::wait(&mut h, "loop", &perch, &agent, tmp.path(), &dirs, |p| {
         budget_hit |= matches!(p, Peep::BudgetExceeded { .. });
@@ -132,7 +138,13 @@ impl Perch for Sleeper {
     fn binary(&self) -> &'static str {
         ""
     }
-    fn launch(&self, _a: &AgentSpec, _t: &str, _d: &NestDirs) -> nest::perch::Launch {
+    fn launch(
+        &self,
+        _a: &AgentSpec,
+        _t: &str,
+        _d: &NestDirs,
+        _s: Option<&str>,
+    ) -> nest::perch::Launch {
         nest::perch::Launch {
             program: "sh".into(),
             args: vec!["-c".into(), "sleep 60".into()],
@@ -151,7 +163,7 @@ fn wall_clock_budget_kills_silent_runs() {
     let mut agent = spec_with("sleeper", None);
     agent.max_seconds = Some(1);
     let perch = Sleeper;
-    let mut h = hatchling::hatch(&agent, "wait", &perch, tmp.path(), &dirs).unwrap();
+    let mut h = hatchling::hatch(&agent, "wait", &perch, tmp.path(), &dirs, None).unwrap();
     let mut timed_out = false;
     let receipt = hatchling::wait(&mut h, "wait", &perch, &agent, tmp.path(), &dirs, |p| {
         timed_out |= matches!(p, Peep::TimedOut { seconds: 1 });
@@ -170,7 +182,7 @@ fn wait_writes_the_peep_tape_next_to_the_receipt() {
     let dirs = NestDirs::resolve(cwd, Some(cwd.to_path_buf()));
     let agent = spec_with("echobot", None);
     let perch = Echo;
-    let mut h = hatchling::hatch(&agent, "say hi", &perch, cwd, &dirs).unwrap();
+    let mut h = hatchling::hatch(&agent, "say hi", &perch, cwd, &dirs, None).unwrap();
     let receipt = hatchling::wait(&mut h, "say hi", &perch, &agent, cwd, &dirs, |_| {});
     assert_eq!(receipt.status, Status::Done);
 
@@ -201,7 +213,13 @@ impl Perch for Denied {
     fn binary(&self) -> &'static str {
         ""
     }
-    fn launch(&self, _a: &AgentSpec, _t: &str, _d: &NestDirs) -> nest::perch::Launch {
+    fn launch(
+        &self,
+        _a: &AgentSpec,
+        _t: &str,
+        _d: &NestDirs,
+        _s: Option<&str>,
+    ) -> nest::perch::Launch {
         nest::perch::Launch {
             program: "sh".into(),
             args: vec![
@@ -216,13 +234,61 @@ impl Perch for Denied {
     }
 }
 
+/// A perch that announces a resume token — the receipt must carry the
+/// last session id the harness reported.
+struct SessionEcho;
+impl Perch for SessionEcho {
+    fn name(&self) -> &'static str {
+        "session-echo"
+    }
+    fn binary(&self) -> &'static str {
+        ""
+    }
+    fn launch(
+        &self,
+        _a: &AgentSpec,
+        _t: &str,
+        _d: &NestDirs,
+        _s: Option<&str>,
+    ) -> nest::perch::Launch {
+        nest::perch::Launch {
+            program: "sh".into(),
+            args: vec!["-c".into(), "echo session; echo done".into()],
+            env: BTreeMap::new(),
+        }
+    }
+    fn parse(&self, line: &str) -> Option<Peep> {
+        if line == "session" {
+            Some(Peep::Session { id: "ses_1".into() })
+        } else {
+            Some(Peep::Output { text: line.into() })
+        }
+    }
+}
+
+#[test]
+fn receipt_carries_the_harness_session_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
+    let agent = spec_with("chatty", None);
+    let perch = SessionEcho;
+    let mut h = hatchling::hatch(&agent, "hi", &perch, tmp.path(), &dirs, None).unwrap();
+    let mut saw_session = false;
+    let receipt = hatchling::wait(&mut h, "hi", &perch, &agent, tmp.path(), &dirs, |p| {
+        saw_session |= matches!(p, Peep::Session { id } if id == "ses_1");
+    });
+    assert_eq!(receipt.status, Status::Done);
+    assert!(saw_session, "the session peep must reach listeners");
+    assert_eq!(receipt.session.as_deref(), Some("ses_1"));
+}
+
 #[test]
 fn denial_markers_classify_the_failure() {
     let tmp = tempfile::tempdir().unwrap();
     let dirs = NestDirs::resolve(tmp.path(), Some(tmp.path().to_path_buf()));
     let agent = spec_with("sandboxed", None);
     let perch = Denied;
-    let mut h = hatchling::hatch(&agent, "try", &perch, tmp.path(), &dirs).unwrap();
+    let mut h = hatchling::hatch(&agent, "try", &perch, tmp.path(), &dirs, None).unwrap();
     let receipt = hatchling::wait(&mut h, "try", &perch, &agent, tmp.path(), &dirs, |_| {});
     assert_eq!(receipt.status, Status::Failed);
     assert_eq!(receipt.failure_kind, Some(FailureKind::Denied));
@@ -238,7 +304,13 @@ impl Perch for ScriptedGate {
     fn binary(&self) -> &'static str {
         ""
     }
-    fn launch(&self, agent: &AgentSpec, _t: &str, _d: &NestDirs) -> nest::perch::Launch {
+    fn launch(
+        &self,
+        agent: &AgentSpec,
+        _t: &str,
+        _d: &NestDirs,
+        _s: Option<&str>,
+    ) -> nest::perch::Launch {
         nest::perch::Launch {
             program: "sh".into(),
             args: if agent.name == "denied-bot" {
@@ -307,7 +379,8 @@ fn brood_falls_back_when_first_candidate_fails() {
             } else {
                 &echo
             };
-            let mut h = hatchling::hatch(&target.agent, "t", perch, tmp.path(), &dirs).unwrap();
+            let mut h =
+                hatchling::hatch(&target.agent, "t", perch, tmp.path(), &dirs, None).unwrap();
             let r = hatchling::wait(&mut h, "t", perch, &target.agent, tmp.path(), &dirs, |_| {});
             attempts.push((target.agent.name.clone(), r.status));
             if r.status == Status::Done {
@@ -337,6 +410,7 @@ fn egress_advisory_does_not_treat_url_text_as_a_network_breach() {
         &perch,
         tmp.path(),
         &dirs,
+        None,
     )
     .unwrap();
     let receipt = hatchling::wait(&mut h, "fetch", &perch, &agent, tmp.path(), &dirs, |_| {});
@@ -350,7 +424,7 @@ fn subagent_spool_is_cleaned_up() {
     let mut agent = spec_with("council-member", None);
     agent.mode = Some(spoke_core::manifest::BotMode::Subagent);
     let perch = Echo;
-    let mut h = hatchling::hatch(&agent, "deliberate", &perch, tmp.path(), &dirs).unwrap();
+    let mut h = hatchling::hatch(&agent, "deliberate", &perch, tmp.path(), &dirs, None).unwrap();
     // plant spool litter the run should remove
     let spool = tmp.path().join(".nest").join("spool").join(&h.id);
     std::fs::create_dir_all(&spool).unwrap();

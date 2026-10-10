@@ -6,11 +6,13 @@
 //! order when neither exists. `dispatch` walks that candidate list,
 //! hatching each until one finishes cleanly.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{bail, Result};
-use spoke_core::manifest::Route;
+use spoke_core::manifest::{Route, ToolPolicy};
 
+use crate::chief::Delegate;
 use crate::hatchling::{self, FailureKind, Receipt, Status};
 use crate::peep::Peep;
 use crate::perch::Perch;
@@ -27,6 +29,8 @@ pub enum Via {
     Boss,
     /// No routes and no boss — only bot available.
     Only,
+    /// The chief delegated to this bot directly.
+    Chief,
 }
 
 /// One dispatch candidate.
@@ -34,6 +38,9 @@ pub enum Via {
 pub struct Target {
     pub agent: AgentSpec,
     pub via: Via,
+    /// Per-candidate task override — chief delegations carry sub-tasks;
+    /// `None` runs the dispatch's task verbatim.
+    pub task: Option<String>,
 }
 
 /// The council: the roster plus the routing table.
@@ -54,13 +61,17 @@ impl Brood {
     fn push_target(
         &self,
         out: &mut Vec<Target>,
-        seen: &mut std::collections::BTreeSet<String>,
+        seen: &mut BTreeSet<String>,
         name: &str,
         via: Via,
     ) {
         if seen.insert(name.to_string()) {
             if let Some(agent) = self.agent(name) {
-                out.push(Target { agent, via });
+                out.push(Target {
+                    agent,
+                    via,
+                    task: None,
+                });
             }
         }
     }
@@ -102,9 +113,34 @@ impl Brood {
         out
     }
 
-    /// Walk the candidate list: hatch each until one finishes `Done`.
-    /// Every attempt's receipt is kept (the roost records failures too);
-    /// `winner` is `None` when the whole ladder fails.
+    /// The chief's candidate order: its delegations first (dedup'd,
+    /// unknown bots skipped), then everything `plan` would have offered —
+    /// routes and the boss remain the deterministic fallback, so a bad
+    /// delegation degrades to keyword routing rather than failing.
+    pub fn plan_chief(&self, task: &str, delegates: &[Delegate]) -> Vec<Target> {
+        let mut out: Vec<Target> = Vec::new();
+        let mut seen = BTreeSet::new();
+        for d in delegates {
+            if seen.insert(d.bot.clone()) {
+                if let Some(agent) = self.agent(&d.bot) {
+                    out.push(Target {
+                        agent,
+                        via: Via::Chief,
+                        task: d.task.clone(),
+                    });
+                }
+            }
+        }
+        for target in self.plan(task) {
+            if seen.insert(target.agent.name.clone()) {
+                out.push(target);
+            }
+        }
+        out
+    }
+
+    /// Dispatch with the deterministic `plan` candidate list and no
+    /// approvals — the classic walk-the-ladder behavior.
     pub fn dispatch(
         &self,
         task: &str,
@@ -113,15 +149,53 @@ impl Brood {
         dirs: &crate::home::NestDirs,
         on_peep: impl FnMut(&str, &Peep),
     ) -> Result<Dispatch> {
+        self.dispatch_full(
+            task,
+            self.plan(task),
+            perch,
+            cwd,
+            dirs,
+            &BTreeSet::new(),
+            on_peep,
+        )
+    }
+
+    /// Walk an explicit candidate list: hatch each until one finishes
+    /// `Done`. `approved` names `ask`-policy tools the caller pre-approved
+    /// — they're promoted to `allow` for this dispatch only; tools still
+    /// denied emit an `Ask` peep so the tape shows what was withheld.
+    /// Every attempt's receipt is kept (the roost records failures too);
+    /// `winner` is `None` when the whole ladder fails.
+    pub fn dispatch_full(
+        &self,
+        task: &str,
+        candidates: Vec<Target>,
+        perch: &dyn Perch,
+        cwd: &Path,
+        dirs: &crate::home::NestDirs,
+        approved: &BTreeSet<String>,
+        on_peep: impl FnMut(&str, &Peep),
+    ) -> Result<Dispatch> {
         let mut on_peep = on_peep;
-        let candidates = self.plan(task);
         if candidates.is_empty() {
             bail!("the brood is empty — no bots declared in .nest/agents/");
         }
         let mut attempts = Vec::new();
         for target in candidates {
-            let agent = &target.agent;
-            let receipt = match hatchling::hatch(agent, task, perch, cwd, dirs) {
+            // promote approved asks for this run only; unapproved asks
+            // stay denied (the perch's deny side) and get an Ask peep
+            let mut agent = target.agent.clone();
+            let asks = agent.ask_tools();
+            for tool in &asks {
+                if approved.contains(tool) {
+                    agent.permissions.insert(tool.clone(), ToolPolicy::Allow);
+                } else {
+                    on_peep(&agent.name, &Peep::Ask { tool: tool.clone() });
+                }
+            }
+            let agent = &agent;
+            let task = target.task.as_deref().unwrap_or(task);
+            let receipt = match hatchling::hatch(agent, task, perch, cwd, dirs, None) {
                 Ok(mut h) => hatchling::wait(&mut h, task, perch, agent, cwd, dirs, |peep| {
                     on_peep(&agent.name, peep)
                 }),
@@ -266,6 +340,7 @@ mod tests {
             agent: &AgentSpec,
             _task: &str,
             _dirs: &crate::home::NestDirs,
+            _session: Option<&str>,
         ) -> crate::perch::Launch {
             crate::perch::Launch {
                 program: "sh".into(),
@@ -308,5 +383,110 @@ mod tests {
             .dispatch("task", &ScriptedPerch, tmp.path(), &dirs, |_, _| {})
             .unwrap();
         assert!(!dispatch.winner.as_ref().unwrap().hard_won);
+    }
+
+    #[test]
+    fn chief_delegations_come_first_then_the_routes() {
+        let brood = Brood::new(
+            vec![
+                agent("debugger", false),
+                agent("doc-keeper", false),
+                agent("boss", true),
+            ],
+            vec![route(&["bug"], "debugger", &[])],
+        );
+        let delegates = vec![
+            Delegate {
+                bot: "doc-keeper".into(),
+                task: Some("log the incident".into()),
+            },
+            // unknown bots are skipped, not fatal
+            Delegate {
+                bot: "ghost".into(),
+                task: None,
+            },
+            // duplicates don't double-hatch
+            Delegate {
+                bot: "doc-keeper".into(),
+                task: Some("again".into()),
+            },
+        ];
+        let plan = brood.plan_chief("fix the bug", &delegates);
+        assert_eq!(plan[0].agent.name, "doc-keeper");
+        assert_eq!(plan[0].via, Via::Chief);
+        assert_eq!(plan[0].task.as_deref(), Some("log the incident"));
+        // the deterministic plan still follows — a bad delegation
+        // degrades to routing, not to nothing
+        assert_eq!(plan[1].agent.name, "debugger");
+        assert_eq!(plan[1].via, Via::Matched("bug".into()));
+        // a matched route has no trailing boss — the boss only joins
+        // when the deterministic plan comes back empty
+        assert_eq!(plan.len(), 2);
+
+        // unmatched task: the boss still trails the delegation
+        let plan = brood.plan_chief("nobody routes this", &delegates);
+        assert_eq!(plan[0].via, Via::Chief);
+        assert_eq!(plan[1].agent.name, "boss");
+        assert_eq!(plan[1].via, Via::Boss);
+    }
+
+    #[test]
+    fn empty_delegations_match_plain_plan() {
+        let brood = Brood::new(vec![agent("boss", true)], vec![]);
+        let delegated = brood.plan_chief("x", &[]);
+        let plain = brood.plan("x");
+        assert_eq!(delegated.len(), plain.len());
+        assert_eq!(delegated[0].agent.name, plain[0].agent.name);
+    }
+
+    #[test]
+    fn unapproved_asks_emit_an_ask_peep_and_stay_denied() {
+        use spoke_core::manifest::ToolPolicy;
+        let mut asking = agent("asking", false);
+        asking.permissions.insert("bash".into(), ToolPolicy::Ask);
+        let brood = Brood::new(vec![asking], vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::home::NestDirs::resolve(tmp.path(), Some(tmp.path().join("h")));
+        let mut peeps: Vec<Peep> = Vec::new();
+        let dispatch = brood
+            .dispatch_full(
+                "t",
+                brood.plan("t"),
+                &ScriptedPerch,
+                tmp.path(),
+                &dirs,
+                &Default::default(),
+                |_, p| peeps.push(p.clone()),
+            )
+            .unwrap();
+        assert!(dispatch.winner.is_some());
+        assert!(peeps
+            .iter()
+            .any(|p| matches!(p, Peep::Ask { tool } if tool == "bash")));
+    }
+
+    #[test]
+    fn approved_asks_promote_without_an_ask_peep() {
+        use spoke_core::manifest::ToolPolicy;
+        let mut asking = agent("asking", false);
+        asking.permissions.insert("bash".into(), ToolPolicy::Ask);
+        let brood = Brood::new(vec![asking], vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::home::NestDirs::resolve(tmp.path(), Some(tmp.path().join("h")));
+        let approved: std::collections::BTreeSet<String> = ["bash".to_string()].into();
+        let mut peeps: Vec<Peep> = Vec::new();
+        let dispatch = brood
+            .dispatch_full(
+                "t",
+                brood.plan("t"),
+                &ScriptedPerch,
+                tmp.path(),
+                &dirs,
+                &approved,
+                |_, p| peeps.push(p.clone()),
+            )
+            .unwrap();
+        assert!(dispatch.winner.is_some());
+        assert!(!peeps.iter().any(|p| matches!(p, Peep::Ask { .. })));
     }
 }

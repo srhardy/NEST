@@ -322,6 +322,145 @@ fn session_api_persists_messages_and_restores_transcript() {
     assert_eq!(listed["sessions"][0]["id"], session);
 }
 
+/// Chat goes through the chief: a planner that returns `{"answer":…}`
+/// answers directly — no bot hatches, and the transcript gets the text.
+#[test]
+fn session_send_chief_answers_directly() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    // a cheap command provider whose reply the chief can parse
+    std::fs::write(
+        home.join("providers.toml"),
+        "[[providers]]\nname = \"chief-llm\"\nkind = \"command\"\nprogram = \"sh\"\nargs = [\"-c\", \"printf '{\\\"answer\\\": \\\"hello from the chief\\\"}'\"]\ncost = \"free\"\n",
+    )
+    .unwrap();
+    let port = start(&home, t.path());
+
+    let created = body(&http(
+        port,
+        "POST",
+        "/api/sessions/send",
+        Some(r#"{"bot":"nest","task":"hi","approved_tools":["bash"]}"#),
+    ));
+    let created: serde_json::Value = serde_json::from_str(&created).unwrap();
+    let session = created["session"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let transcript = loop {
+        let raw = body(&http(
+            port,
+            "GET",
+            &format!("/api/sessions/{session}"),
+            None,
+        ));
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        if value["session"]["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.len() == 2 && messages[1]["state"] != "running")
+        {
+            break value["session"].clone();
+        }
+        assert!(Instant::now() < deadline, "chief reply never landed: {raw}");
+        thread::sleep(Duration::from_millis(20));
+    };
+    let messages = transcript["messages"].as_array().unwrap();
+    assert_eq!(messages[1]["state"], "done");
+    assert_eq!(messages[1]["text"], "hello from the chief");
+
+    // the chief's answer is recorded in the roost like any other run
+    let runs = body(&http(port, "GET", "/api/runs", None));
+    let runs: serde_json::Value = serde_json::from_str(&runs).unwrap();
+    assert!(runs["receipts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| { r["agent"] == "chief" && r["status"] == "done" }));
+}
+
+/// The chief delegates: a planner returning `{"delegate":[…]}` hatches
+/// the named bot; a planner that can't decide (no providers) leaves the
+/// task to the deterministic routing table.
+#[test]
+fn session_send_chief_delegates_then_falls_back_to_routes() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("providers.toml"),
+        "[[providers]]\nname = \"chief-llm\"\nkind = \"command\"\nprogram = \"sh\"\nargs = [\"-c\", \"printf '{\\\"delegate\\\": [{\\\"bot\\\": \\\"doc-keeper\\\"}]}'\"]\ncost = \"free\"\n",
+    )
+    .unwrap();
+    let port = start(&home, t.path());
+
+    let created = body(&http(
+        port,
+        "POST",
+        "/api/sessions/send",
+        Some(r#"{"bot":"nest","task":"doc work please"}"#),
+    ));
+    let created: serde_json::Value = serde_json::from_str(&created).unwrap();
+    assert!(created["id"].as_str().is_some(), "{created}");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let runs = body(&http(port, "GET", "/api/runs", None));
+        let v: serde_json::Value = serde_json::from_str(&runs).unwrap_or_default();
+        if v["receipts"].as_array().is_some_and(|rs| {
+            rs.iter()
+                .any(|r| r["agent"] == "doc-keeper" && r["status"] == "done")
+        }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "delegation never ran: {runs}");
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // no providers → the planner Undecides → routing.toml still wins
+    std::fs::remove_file(home.join("providers.toml")).unwrap();
+    let created = body(&http(
+        port,
+        "POST",
+        "/api/sessions/send",
+        Some(r#"{"bot":"nest","task":"fix the doc"}"#),
+    ));
+    let created: serde_json::Value = serde_json::from_str(&created).unwrap();
+    let session = created["session"].as_str().unwrap().to_string();
+    let run = created["id"].as_str().unwrap().to_string();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let transcript = loop {
+        let raw = body(&http(
+            port,
+            "GET",
+            &format!("/api/sessions/{session}"),
+            None,
+        ));
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        if value["session"]["messages"]
+            .as_array()
+            .is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message["run_id"] == run && message["state"] != "running")
+            })
+        {
+            break value["session"].clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "routed fallback never ran: {raw}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    let message = transcript["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["run_id"] == run)
+        .unwrap();
+    assert_eq!(message["state"], "done");
+}
+
 #[test]
 fn shell_hatch_records_receipt() {
     let t = tempfile::tempdir().unwrap();

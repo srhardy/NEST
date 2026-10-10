@@ -42,8 +42,16 @@ pub trait Perch: Send + Sync {
         }
         which(bin).is_some()
     }
-    /// Build the spawn command for a bot + task.
-    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch;
+    /// Build the spawn command for a bot + task. `session` is the
+    /// harness's own conversation id when resuming — perches without
+    /// resume semantics ignore it and start fresh.
+    fn launch(
+        &self,
+        agent: &AgentSpec,
+        task: &str,
+        dirs: &NestDirs,
+        session: Option<&str>,
+    ) -> Launch;
     /// One output line → one peep. `None` skips the line.
     fn parse(&self, line: &str) -> Option<Peep>;
     /// Why did a failed run fail? The default sniffs the output tail for
@@ -203,7 +211,13 @@ impl Perch for ClaudeCode {
     fn binary(&self) -> &'static str {
         "claude"
     }
-    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
+    fn launch(
+        &self,
+        agent: &AgentSpec,
+        task: &str,
+        dirs: &NestDirs,
+        session: Option<&str>,
+    ) -> Launch {
         let (allow, deny) = tool_lists(agent);
         let mut args = vec![
             "-p".into(),
@@ -220,6 +234,10 @@ impl Perch for ClaudeCode {
             args.push("--disallowedTools".into());
             args.push(deny.join(","));
         }
+        if let Some(session) = session {
+            args.push("--resume".into());
+            args.push(session.into());
+        }
         Launch {
             program: "claude".into(),
             args,
@@ -228,6 +246,13 @@ impl Perch for ClaudeCode {
     }
     fn parse(&self, line: &str) -> Option<Peep> {
         let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        // the init event announces the session id — surface it once so
+        // the transcript can resume the next turn on the harness
+        if v.get("type").and_then(|t| t.as_str()) == Some("system") {
+            if let Some(id) = v.get("session_id").and_then(|id| id.as_str()) {
+                return Some(Peep::Session { id: id.into() });
+            }
+        }
         match v.get("type").and_then(|t| t.as_str()) {
             Some("assistant") => Some(Peep::Step {
                 n: 0,
@@ -258,7 +283,13 @@ impl Perch for Codex {
     fn binary(&self) -> &'static str {
         "codex"
     }
-    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
+    fn launch(
+        &self,
+        agent: &AgentSpec,
+        task: &str,
+        dirs: &NestDirs,
+        session: Option<&str>,
+    ) -> Launch {
         // Codex has only global sandbox/approval controls. Since NEST runs
         // headlessly and cannot answer approvals, writes are disabled unless
         // every write-capable tool is explicitly allowed.
@@ -282,23 +313,36 @@ impl Perch for Codex {
         } else {
             "read-only"
         };
+        let mut args: Vec<String> = match session {
+            // `codex exec resume <id> [prompt]` — continue the thread
+            Some(id) => vec!["exec".into(), "resume".into(), id.into()],
+            None => vec!["exec".into()],
+        };
+        args.extend([
+            "--json".into(),
+            "--sandbox".into(),
+            sandbox.into(),
+            "--ask-for-approval".into(),
+            "never".into(),
+            build_prompt(agent, task, dirs),
+        ]);
         Launch {
             program: "codex".into(),
-            args: vec![
-                "exec".into(),
-                "--json".into(),
-                "--sandbox".into(),
-                sandbox.into(),
-                "--ask-for-approval".into(),
-                "never".into(),
-                build_prompt(agent, task, dirs),
-            ],
+            args,
             env: BTreeMap::new(),
         }
     }
     fn parse(&self, line: &str) -> Option<Peep> {
         let v: serde_json::Value = serde_json::from_str(line).ok()?;
         let kind = v.get("type").or_else(|| v.get("msg").map(|m| &m["type"]))?;
+        if kind.as_str()? == "thread.started" {
+            // the thread id is codex's resume token — surface it so the
+            // transcript can pick this conversation back up
+            return v
+                .get("thread_id")
+                .and_then(|id| id.as_str())
+                .map(|id| Peep::Session { id: id.into() });
+        }
         match kind.as_str()? {
             "item.completed" | "exec_command_begin" => Some(Peep::Step {
                 n: 0,
@@ -328,7 +372,13 @@ impl Perch for OpenCode {
     fn binary(&self) -> &'static str {
         "opencode"
     }
-    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
+    fn launch(
+        &self,
+        agent: &AgentSpec,
+        task: &str,
+        dirs: &NestDirs,
+        session: Option<&str>,
+    ) -> Launch {
         let mut env = BTreeMap::new();
         if !agent.permissions.is_empty() {
             let mut perm = serde_json::Map::new();
@@ -346,9 +396,15 @@ impl Perch for OpenCode {
                 serde_json::Value::Object(perm).to_string(),
             );
         }
+        let mut args = vec!["run".into()];
+        if let Some(session) = session {
+            args.push("--session".into());
+            args.push(session.into());
+        }
+        args.push(build_prompt(agent, task, dirs));
         Launch {
             program: "opencode".into(),
-            args: vec!["run".into(), build_prompt(agent, task, dirs)],
+            args,
             env,
         }
     }
@@ -375,7 +431,13 @@ impl Perch for Pi {
     fn binary(&self) -> &'static str {
         "pi"
     }
-    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
+    fn launch(
+        &self,
+        agent: &AgentSpec,
+        task: &str,
+        dirs: &NestDirs,
+        _session: Option<&str>,
+    ) -> Launch {
         let mut denied: Vec<String> = agent
             .permissions
             .iter()
@@ -440,7 +502,13 @@ impl Perch for Echo {
     fn binary(&self) -> &'static str {
         ""
     }
-    fn launch(&self, agent: &AgentSpec, task: &str, dirs: &NestDirs) -> Launch {
+    fn launch(
+        &self,
+        agent: &AgentSpec,
+        task: &str,
+        dirs: &NestDirs,
+        _session: Option<&str>,
+    ) -> Launch {
         let mut env = BTreeMap::new();
         env.insert("NEST_PROMPT".into(), build_prompt(agent, task, dirs));
         Launch {
@@ -464,7 +532,13 @@ impl Perch for Fail {
     fn binary(&self) -> &'static str {
         ""
     }
-    fn launch(&self, _agent: &AgentSpec, _task: &str, _dirs: &NestDirs) -> Launch {
+    fn launch(
+        &self,
+        _agent: &AgentSpec,
+        _task: &str,
+        _dirs: &NestDirs,
+        _session: Option<&str>,
+    ) -> Launch {
         Launch {
             program: "sh".into(),
             args: vec![
@@ -609,7 +683,7 @@ mod tests {
             &PathBuf::from("/"),
             Some(tempfile::tempdir().unwrap().path().to_path_buf()),
         );
-        let launch = ClaudeCode.launch(&agent, "task", &dirs);
+        let launch = ClaudeCode.launch(&agent, "task", &dirs, None);
         let joined = launch.args.join(" ");
         assert!(joined.contains("--allowedTools Bash"));
         assert!(joined.contains("--disallowedTools Edit,Write"));
@@ -628,6 +702,63 @@ mod tests {
     }
 
     #[test]
+    fn claude_resume_adds_the_flag_and_parse_surfaces_the_session_id() {
+        let agent = spec(&[]);
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
+        // fresh runs get no resume flag; a transcript session adds it
+        assert!(!ClaudeCode
+            .launch(&agent, "task", &dirs, None)
+            .args
+            .join(" ")
+            .contains("--resume"));
+        let resumed = ClaudeCode.launch(&agent, "task", &dirs, Some("sess-42"));
+        let joined = resumed.args.join(" ");
+        assert!(joined.contains("--resume sess-42"));
+
+        // the init event announces the id; other events keep their
+        // normal peep shape (every stream-json event carries session_id)
+        let init = r#"{"type":"system","subtype":"init","session_id":"sess-42"}"#;
+        assert!(matches!(
+            ClaudeCode.parse(init),
+            Some(Peep::Session { id }) if id == "sess-42"
+        ));
+        let mid = r#"{"type":"assistant","session_id":"sess-42","message":{}}"#;
+        assert!(matches!(ClaudeCode.parse(mid), Some(Peep::Step { .. })));
+    }
+
+    #[test]
+    fn codex_resume_uses_exec_resume_and_thread_id_is_the_session() {
+        let agent = spec(&[]);
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
+        let resumed = Codex.launch(&agent, "task", &dirs, Some("thread-7"));
+        assert_eq!(resumed.args[0..3], ["exec", "resume", "thread-7"]);
+        assert!(resumed.args.join(" ").contains("--json"));
+
+        let started = r#"{"type":"thread.started","thread_id":"thread-7"}"#;
+        assert!(matches!(
+            Codex.parse(started),
+            Some(Peep::Session { id }) if id == "thread-7"
+        ));
+    }
+
+    #[test]
+    fn opencode_resume_passes_the_session_flag() {
+        let agent = spec(&[]);
+        let dirs = NestDirs::resolve(
+            &PathBuf::from("/"),
+            Some(tempfile::tempdir().unwrap().path().to_path_buf()),
+        );
+        let resumed = OpenCode.launch(&agent, "task", &dirs, Some("ses_9"));
+        assert_eq!(resumed.args[1..3], ["--session", "ses_9"]);
+    }
+
+    #[test]
     fn echo_is_always_detected() {
         assert!(Echo.detect());
         assert!(perch_named("echo").is_some());
@@ -642,7 +773,7 @@ mod tests {
             &PathBuf::from("/"),
             Some(tempfile::tempdir().unwrap().path().to_path_buf()),
         );
-        let launch = Codex.launch(&agent, "task", &dirs);
+        let launch = Codex.launch(&agent, "task", &dirs, None);
         let joined = launch.args.join(" ");
         assert!(joined.contains("--sandbox read-only"));
         assert!(joined.contains("--ask-for-approval never"));
@@ -656,7 +787,7 @@ mod tests {
         );
         let partial = spec(&[("write", ToolPolicy::Allow)]);
         assert!(Codex
-            .launch(&partial, "task", &dirs)
+            .launch(&partial, "task", &dirs, None)
             .args
             .join(" ")
             .contains("--sandbox read-only"));
@@ -676,21 +807,21 @@ mod tests {
         .collect::<Vec<_>>();
         let granted = spec(&all_write_tools_allowed);
         assert!(Codex
-            .launch(&granted, "task", &dirs)
+            .launch(&granted, "task", &dirs, None)
             .args
             .join(" ")
             .contains("--sandbox workspace-write"));
 
         let denied = spec(&[("write", ToolPolicy::Allow), ("bash", ToolPolicy::Deny)]);
         assert!(Codex
-            .launch(&denied, "task", &dirs)
+            .launch(&denied, "task", &dirs, None)
             .args
             .join(" ")
             .contains("--sandbox read-only"));
 
         let only_read = spec(&[("read", ToolPolicy::Allow)]);
         assert!(Codex
-            .launch(&only_read, "task", &dirs)
+            .launch(&only_read, "task", &dirs, None)
             .args
             .join(" ")
             .contains("--sandbox read-only"));
@@ -707,7 +838,7 @@ mod tests {
             &PathBuf::from("/"),
             Some(tempfile::tempdir().unwrap().path().to_path_buf()),
         );
-        let launch = OpenCode.launch(&agent, "task", &dirs);
+        let launch = OpenCode.launch(&agent, "task", &dirs, None);
         let perm: serde_json::Value =
             serde_json::from_str(launch.env.get("OPENCODE_PERMISSION").unwrap()).unwrap();
         assert_eq!(perm["bash"], "allow");
@@ -721,7 +852,7 @@ mod tests {
             &PathBuf::from("/"),
             Some(tempfile::tempdir().unwrap().path().to_path_buf()),
         );
-        assert!(OpenCode.launch(&agent, "task", &dirs).env.is_empty());
+        assert!(OpenCode.launch(&agent, "task", &dirs, None).env.is_empty());
     }
 
     #[test]
@@ -735,7 +866,7 @@ mod tests {
             &PathBuf::from("/"),
             Some(tempfile::tempdir().unwrap().path().to_path_buf()),
         );
-        let launch = Pi.launch(&agent, "task", &dirs);
+        let launch = Pi.launch(&agent, "task", &dirs, None);
         let joined = launch.args.join(" ");
         assert!(joined.contains("--mode json"));
         assert!(joined.contains("-p"));

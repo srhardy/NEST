@@ -90,6 +90,10 @@ pub struct Receipt {
     /// the receipt is the summary; that file is the tape.
     #[serde(default)]
     pub peeps_path: Option<PathBuf>,
+    /// The harness's conversation/session id when it reported one —
+    /// the resume token for this bot's next turn.
+    #[serde(default)]
+    pub session: Option<String>,
     /// Last lines of output (capped), for receipts and triage.
     pub tail: Vec<String>,
 }
@@ -114,20 +118,24 @@ impl Receipt {
             hard_won: false,
             failure_kind: Some(FailureKind::Spawn),
             peeps_path: None,
+            session: None,
             tail: vec![error.to_string()],
         }
     }
 }
 
 /// Spawn `task` on `perch` as `agent`, in working directory `cwd`.
+/// `session` resumes a harness-native conversation where the perch
+/// supports it — `None` starts a fresh turn.
 pub fn hatch(
     agent: &AgentSpec,
     task: &str,
     perch: &dyn Perch,
     cwd: &Path,
     dirs: &crate::home::NestDirs,
+    session: Option<&str>,
 ) -> Result<Hatchling> {
-    let launch = perch.launch(agent, task, dirs);
+    let launch = perch.launch(agent, task, dirs, session);
     let mut cmd = Command::new(&launch.program);
     cmd.args(&launch.args)
         .envs(&launch.env)
@@ -225,7 +233,7 @@ pub fn wait(
     let stderr = child.stderr.take();
     let (tx, rx) = channel::<Peep>();
 
-    let (steps, tail, killed) = thread::scope(|scope| {
+    let (steps, tail, session, killed) = thread::scope(|scope| {
         let streams: Vec<Box<dyn std::io::Read + Send>> = [
             stdout.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
             stderr.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
@@ -249,6 +257,8 @@ pub fn wait(
 
         let mut steps = 0u32;
         let mut tail: Vec<String> = Vec::new();
+        // the harness's resume token, if it announces one mid-run
+        let mut session: Option<String> = None;
         // Some(kind) once a budget has killed the child — the loop then
         // just drains whatever the readers still have to say.
         let mut killed: Option<FailureKind> = None;
@@ -289,6 +299,10 @@ pub fn wait(
                     }
                     emit(&peep);
                 }
+                Peep::Session { id } => {
+                    session = Some(id.clone());
+                    emit(&peep);
+                }
                 _ => emit(&peep),
             }
             if killed.is_none() {
@@ -301,7 +315,7 @@ pub fn wait(
                 }
             }
         }
-        (steps, tail, killed)
+        (steps, tail, session, killed)
     });
 
     let exit = child.wait().ok();
@@ -346,6 +360,7 @@ pub fn wait(
         finished_ms: now_ms(),
         hard_won: false,
         failure_kind,
+        session,
         peeps_path: log.is_some().then_some(peeps_path),
         tail,
     }

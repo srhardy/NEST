@@ -253,6 +253,7 @@ mod tests {
             hard_won: false,
             failure_kind: None,
             peeps_path: None,
+            session: None,
             tail: vec!["did the thing".into()],
         }
     }

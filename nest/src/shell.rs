@@ -21,12 +21,12 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
-use crate::brood::Brood;
+use crate::brood::{self, Brood};
 use crate::hatchling::{self, Receipt, Status};
 use crate::home::NestDirs;
 use crate::patrol;
 use crate::peep::Peep;
-use crate::perch;
+use crate::perch::{self, Perch};
 use crate::roost;
 use crate::spec::{self, AgentSpec};
 
@@ -304,6 +304,10 @@ struct Transcript {
     schema: u32,
     id: String,
     bot: String,
+    /// The harness's resume token for this chat, when the perch reported
+    /// one — carried into the next send so the conversation continues.
+    #[serde(default)]
+    harness_session: Option<String>,
     messages: Vec<TranscriptMessage>,
 }
 
@@ -449,7 +453,14 @@ impl Shell {
         let res = if d.wants_brood() {
             self.start_brood(&prompt, None)
         } else {
-            self.start_hatch(d.spec.bot.as_deref().unwrap_or(""), &prompt, None)
+            // routines are headless — no approvals, no session
+            self.start_hatch(
+                d.spec.bot.as_deref().unwrap_or(""),
+                &prompt,
+                None,
+                None,
+                BTreeSet::new(),
+            )
         };
         res.ok()
     }
@@ -679,6 +690,7 @@ impl Shell {
             perch.as_ref(),
             &self.cwd,
             &self.dirs,
+            None,
         )?;
         let receipt = hatchling::wait(
             &mut h,
@@ -847,6 +859,7 @@ impl Shell {
             schema: 1,
             id: id.to_string(),
             bot: bot.unwrap_or("nest").to_string(),
+            harness_session: None,
             messages: Vec::new(),
         })
     }
@@ -924,6 +937,16 @@ impl Shell {
                     .as_ref()
                     .map(|receipt| format!("{:?}", receipt.status).to_lowercase())
                     .unwrap_or_else(|| "interrupted".into());
+                // the last session peep wins — it's the resume token for
+                // the next turn on this transcript
+                let session = run.events.lock().unwrap().iter().rev().find_map(|event| {
+                    (event["peep"]["kind"].as_str() == Some("session"))
+                        .then(|| event["peep"]["id"].as_str().map(str::to_string))
+                        .flatten()
+                });
+                if session.is_some() {
+                    transcript.harness_session = session;
+                }
                 if let Some(message) = transcript
                     .messages
                     .iter_mut()
@@ -976,13 +999,26 @@ impl Shell {
     }
 
     /// Spawn a hatch run in the background; returns the run id.
-    fn start_hatch(&self, bot: &str, task: &str, perch_name: Option<&str>) -> Result<String> {
+    /// `session` resumes the harness's conversation where the perch
+    /// supports it; `approved` promotes `ask` tools to allow for this run.
+    fn start_hatch(
+        &self,
+        bot: &str,
+        task: &str,
+        perch_name: Option<&str>,
+        session: Option<String>,
+        approved: BTreeSet<String>,
+    ) -> Result<String> {
         let (agents, _) = self.agents();
-        let agent = agents
+        let mut agent = agents
             .iter()
             .find(|a| a.name == bot)
             .with_context(|| format!("no bot named '{bot}'"))?
             .clone();
+        // the launch-time approval gate — unapproved asks stay denied
+        // and get an Ask peep so the tape shows what was withheld
+        let asks = agent.ask_tools();
+        agent.promote_approved_asks(&approved);
         let perch = match perch_name {
             Some(name) => {
                 perch::perch_named(name).with_context(|| format!("unknown perch '{name}'"))?
@@ -999,10 +1035,20 @@ impl Shell {
             receipt: Mutex::new(None),
         });
         self.register_run(run.clone());
+        for tool in asks.iter().filter(|tool| !approved.contains(*tool)) {
+            run.emit_peep(&agent.name, &Peep::Ask { tool: tool.clone() });
+        }
         let (run_id, cwd, roost_dir) = (run.id.clone(), self.cwd.clone(), self.dirs.roost());
         let (task, dirs) = (task.to_string(), self.dirs.clone());
         thread::spawn(move || {
-            let receipt = match hatchling::hatch(&agent, &task, perch.as_ref(), &cwd, &dirs) {
+            let receipt = match hatchling::hatch(
+                &agent,
+                &task,
+                perch.as_ref(),
+                &cwd,
+                &dirs,
+                session.as_deref(),
+            ) {
                 Ok(mut h) => {
                     let run2 = run.clone();
                     let name = agent.name.clone();
@@ -1144,6 +1190,7 @@ impl Shell {
                         hard_won: false,
                         failure_kind: None,
                         peeps_path: None,
+                        session: None,
                         tail,
                     }
                 }
@@ -1163,6 +1210,7 @@ impl Shell {
                         hard_won: false,
                         failure_kind: Some(hatchling::FailureKind::Exit),
                         peeps_path: None,
+                        session: None,
                         tail,
                     }
                 }
@@ -1182,6 +1230,7 @@ impl Shell {
                         hard_won: false,
                         failure_kind: Some(hatchling::FailureKind::Spawn),
                         peeps_path: None,
+                        session: None,
                         tail: vec![err],
                     }
                 }
@@ -1282,6 +1331,69 @@ impl Shell {
 
     /// Spawn a brood dispatch in the background.
     fn start_brood(&self, task: &str, perch_name: Option<&str>) -> Result<String> {
+        self.start_dispatch(task, Vec::new(), perch_name, BTreeSet::new(), false)
+    }
+
+    /// The deterministic dispatch with a pre-approved tool set — the
+    /// Expert path (`/api/brood`) keeps keyword routing even when the
+    /// caller approves `ask` tools.
+    fn start_brood_approved(
+        &self,
+        task: &str,
+        perch_name: Option<&str>,
+        approved: BTreeSet<String>,
+    ) -> Result<String> {
+        self.start_dispatch(task, Vec::new(), perch_name, approved, false)
+    }
+
+    /// The chat path: the chief plans first — answer directly, delegate
+    /// to roster bots, or shrug (undecided → the routing table). Every
+    /// outcome still lands as a run so the page and transcript see one
+    /// uniform stream.
+    fn start_chief(
+        &self,
+        task: &str,
+        context: Vec<String>,
+        approved: BTreeSet<String>,
+    ) -> Result<String> {
+        self.start_dispatch(task, context, None, approved, true)
+    }
+
+    /// Record + finish a dispatch on a run — the tail every dispatch
+    /// path shares (hatch, brood, chief).
+    fn finish_dispatch(
+        run: &Run,
+        dispatch: brood::Dispatch,
+        roost_dir: &Path,
+        perch: &dyn Perch,
+        task: &str,
+    ) {
+        for receipt in dispatch.all_receipts() {
+            roost::record(roost_dir, receipt).ok();
+        }
+        match dispatch.winner {
+            Some(receipt) => run.finish(receipt),
+            None => {
+                let last = dispatch
+                    .attempts
+                    .last()
+                    .map(|(_, r)| r.clone())
+                    .unwrap_or_else(|| {
+                        Receipt::spawn_failed(&brood_stub(), task, perch, "no candidates")
+                    });
+                run.finish(last);
+            }
+        }
+    }
+
+    fn start_dispatch(
+        &self,
+        task: &str,
+        context: Vec<String>,
+        perch_name: Option<&str>,
+        approved: BTreeSet<String>,
+        chief: bool,
+    ) -> Result<String> {
         let (agents, _) = self.agents();
         let routes = spec::load_routes(&self.dirs.routing_files())?;
         let brood = Brood::new(agents, routes);
@@ -1304,70 +1416,65 @@ impl Shell {
         let (run_id, cwd, roost_dir) = (run.id.clone(), self.cwd.clone(), self.dirs.roost());
         let (task, dirs) = (task.to_string(), self.dirs.clone());
         thread::spawn(move || {
+            let plan = if chief {
+                run.emit_peep(
+                    "chief",
+                    &Peep::Step {
+                        n: 0,
+                        label: "planning".into(),
+                    },
+                );
+                let router = crate::forage::Router::from_dirs(&dirs);
+                match crate::chief::plan(&task, &context, &brood.agents, &router) {
+                    crate::chief::ChiefPlan::Answer(text) => {
+                        run.emit_peep("chief", &Peep::Output { text: text.clone() });
+                        run.emit_peep("chief", &Peep::Done { code: 0 });
+                        let now = hatchling::now_ms();
+                        let receipt = Receipt {
+                            id: format!("chief-{now}"),
+                            agent: "chief".into(),
+                            perch: "chief".into(),
+                            task: task.clone(),
+                            status: hatchling::Status::Done,
+                            steps: 0,
+                            exit_code: Some(0),
+                            started_ms: now,
+                            finished_ms: now,
+                            hard_won: false,
+                            failure_kind: None,
+                            peeps_path: None,
+                            session: None,
+                            tail: vec![text],
+                        };
+                        roost::record(&roost_dir, &receipt).ok();
+                        run.finish(receipt);
+                        return;
+                    }
+                    crate::chief::ChiefPlan::Delegations(delegates) => {
+                        brood.plan_chief(&task, &delegates)
+                    }
+                    crate::chief::ChiefPlan::Undecided => brood.plan(&task),
+                }
+            } else {
+                brood.plan(&task)
+            };
             let run2 = run.clone();
-            match brood.dispatch(&task, perch.as_ref(), &cwd, &dirs, move |bot, peep| {
-                run2.emit_peep(bot, peep)
-            }) {
+            match brood.dispatch_full(
+                &task,
+                plan,
+                perch.as_ref(),
+                &cwd,
+                &dirs,
+                &approved,
+                move |bot, peep| run2.emit_peep(bot, peep),
+            ) {
                 Ok(dispatch) => {
-                    for receipt in dispatch.all_receipts() {
-                        roost::record(&roost_dir, receipt).ok();
-                    }
-                    match dispatch.winner {
-                        Some(receipt) => run.finish(receipt),
-                        None => {
-                            let last = dispatch
-                                .attempts
-                                .last()
-                                .map(|(_, r)| r.clone())
-                                .unwrap_or_else(|| {
-                                    Receipt::spawn_failed(
-                                        &AgentSpec {
-                                            name: "brood".into(),
-                                            title: None,
-                                            job: String::new(),
-                                            model: None,
-                                            mode: None,
-                                            boss: false,
-                                            max_steps: None,
-                                            max_seconds: None,
-                                            permissions: Default::default(),
-                                            skills: vec![],
-                                            mcp: vec![],
-                                            budget: None,
-                                            routines: Vec::new(),
-                                            egress: None,
-                                            body: String::new(),
-                                        },
-                                        &task,
-                                        perch.as_ref(),
-                                        "no candidates",
-                                    )
-                                });
-                            run.finish(last);
-                        }
-                    }
+                    Self::finish_dispatch(&run, dispatch, &roost_dir, perch.as_ref(), &task)
                 }
                 Err(e) => {
                     run.emit(json!({"bot": "brood", "peep": {"kind": "failed", "error": format!("{e:#}")}}));
-                    let stub = AgentSpec {
-                        name: "brood".into(),
-                        title: None,
-                        job: String::new(),
-                        model: None,
-                        mode: None,
-                        boss: false,
-                        max_steps: None,
-                        max_seconds: None,
-                        permissions: Default::default(),
-                        skills: vec![],
-                        mcp: vec![],
-                        budget: None,
-                        routines: Vec::new(),
-                        egress: None,
-                        body: String::new(),
-                    };
                     run.finish(Receipt::spawn_failed(
-                        &stub,
+                        &brood_stub(),
                         &task,
                         perch.as_ref(),
                         &format!("{e:#}"),
@@ -1376,6 +1483,28 @@ impl Shell {
             }
         });
         Ok(run_id)
+    }
+}
+
+/// The stub agent behind synthetic "brood" receipts — dispatch-level
+/// failures aren't a bot's run, but the roost still records them.
+fn brood_stub() -> AgentSpec {
+    AgentSpec {
+        name: "brood".into(),
+        title: None,
+        job: String::new(),
+        model: None,
+        mode: None,
+        boss: false,
+        max_steps: None,
+        max_seconds: None,
+        permissions: Default::default(),
+        skills: vec![],
+        mcp: vec![],
+        budget: None,
+        routines: Vec::new(),
+        egress: None,
+        body: String::new(),
     }
 }
 
@@ -2153,10 +2282,38 @@ fn route<'a>(
                     updated_ms: hatchling::now_ms(),
                 });
                 shell.save_transcript(&transcript)?;
+                let approved: BTreeSet<String> = v["approved_tools"]
+                    .as_array()
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|tool| tool.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let run = if bot == "nest" {
-                    shell.start_brood(task, None)?
+                    // chat goes through the chief: answer directly or
+                    // delegate; the roster stays visible as the trace
+                    let context: Vec<String> = transcript
+                        .messages
+                        .iter()
+                        .rev()
+                        .skip(1)
+                        .filter(|message| !message.text.is_empty())
+                        .take(10)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .map(|message| format!("{}: {}", message.role, message.text))
+                        .collect();
+                    shell.start_chief(task, context, approved)?
                 } else {
-                    shell.start_hatch(bot, task, None)?
+                    shell.start_hatch(
+                        bot,
+                        task,
+                        None,
+                        transcript.harness_session.clone(),
+                        approved,
+                    )?
                 };
                 transcript.messages.push(TranscriptMessage {
                     role: "assistant".into(),
@@ -2184,11 +2341,19 @@ fn route<'a>(
             let v: Value = serde_json::from_str(&body).unwrap_or_default();
             let task = v["task"].as_str().unwrap_or_default().to_string();
             let perch = v["perch"].as_str().map(|s| s.to_string());
+            let approved: BTreeSet<String> = v["approved_tools"]
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|tool| tool.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
             let res = if path == "/api/hatch" {
                 let bot = v["bot"].as_str().unwrap_or_default();
-                shell.start_hatch(bot, &task, perch.as_deref())
+                shell.start_hatch(bot, &task, perch.as_deref(), None, approved)
             } else {
-                shell.start_brood(&task, perch.as_deref())
+                shell.start_brood_approved(&task, perch.as_deref(), approved)
             };
             match res {
                 Ok(id) => {
@@ -2258,6 +2423,7 @@ mod service_tests {
             schema: 1,
             id: "session-1".into(),
             bot: "planner".into(),
+            harness_session: None,
             messages: vec![TranscriptMessage {
                 role: "user".into(),
                 text: "find the bug".into(),
@@ -2295,6 +2461,7 @@ mod service_tests {
                 schema: 1,
                 id: id.into(),
                 bot: "planner".into(),
+                harness_session: None,
                 messages: vec![TranscriptMessage {
                     role: "user".into(),
                     text: text.into(),
@@ -2338,6 +2505,7 @@ mod service_tests {
             schema: 1,
             id: "session-crash".into(),
             bot: "planner".into(),
+            harness_session: None,
             messages: vec![TranscriptMessage {
                 role: "assistant".into(),
                 text: "partial output".into(),
@@ -2372,6 +2540,7 @@ mod service_tests {
             schema: 1,
             id: "session-1".into(),
             bot: "planner".into(),
+            harness_session: None,
             messages: vec![TranscriptMessage {
                 role: "user".into(),
                 text: "x".repeat(64 * 1024 + 1),
