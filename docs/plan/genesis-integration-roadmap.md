@@ -75,22 +75,24 @@ routing when no provider is configured; 103 nest tests green.
 
 ---
 
-## Phase 2 — Memory (files, not a database)
+## Phase 2 — Memory (files, not a database) — ✅ shipped
 
 *File-first adaptation of Genesis layers 1–3+5.*
 
 | # | Change | Files | Notes |
 |---|--------|-------|-------|
-| 2.1 | **Memory dirs.** `~/.nest/memory/` (personal) + `.nest/memory/` (project). `facts.md` = one fact/line, `# <run-id>` provenance trailing each line. `user_profile.md` hand-editable. | `home.rs` | Same precedence as agents: project shadows personal. |
-| 2.2 | **Post-run extraction.** After `Done` receipts: background distill (forage, cheapest provider) → candidate facts → hash-dedup → append to `facts.md`. Never blocks the run; failures just skip. | `memory.rs` (new), `hatchling.rs`/`shell.rs` | Reuses feather's distill pattern. Async: `thread::spawn` post-receipt. |
-| 2.3 | **Prompt injection.** `build_prompt` gains a `## Memory` section: `user_profile.md` + project `facts.md` (capped ~4KB) — every hatch sees what the nest knows. | `perch.rs` | Letta blocks, file edition. |
-| 2.4 | **`nest reflect`.** A routine (or manual command) that reads the roost + facts, summarizes activity into `memory/daily/`, prunes stale/duplicate facts (receipt-claimed, not silently deleted — moves to `archive.md`), emits a digest. | `memory.rs`, `main.rs`, `patrol.rs` | Genesis layer 5. Ships as a seeded `[[automation]]` so users get it for free. |
-| 2.5 | **Memory UI + `nest memory`.** List/edit facts in the shell (they're files — the UI is a viewer/editor, not a service). | `main.rs`, `shell.rs`, `web/` | |
+| 2.1 | **Memory dirs.** `~/.nest/memory/` (personal) + `.nest/memory/` (project). `facts.md` = one fact/line, `# <run-id>` provenance; `user_profile.md` hand-editable; `archive.md` for retired facts; `daily/` for digests. | `memory.rs` (new) | Same precedence as agents: project shadows personal. |
+| 2.2 | **Post-run extraction.** Every `Done` receipt spawns a background distill (cheapest provider, durable-facts prompt) → normalized dedup → append to `facts.md`. Never blocks a run; echo-provider homes skip entirely; failed receipts are feather's job, not memory's. | `memory.rs`, `shell.rs`, `main.rs` | Hooked at the three receipt-landing sites (hatch, dispatch, chief answer) + all three CLI record sites. |
+| 2.3 | **Prompt injection.** `build_prompt` gains `## Memory` (profile + merged facts, project first, ~4KB cap) between skills and the task. | `perch.rs` | Verified end-to-end: echo receipts show the block verbatim. |
+| 2.4 | **`nest reflect`.** Reads the roost + facts, writes `memory/daily/<ms>.md` (status/bot counts + failure list), dedups `facts.md` with losers → `archive.md` (never deleted), and drops the digest as an inbox note. `action: "reflect"` on a `[[automation]]` runs it in-process — seeded disabled in a fresh `automations.toml`. | `memory.rs`, `main.rs`, `patrol.rs`, `shell.rs` | Deterministic — no provider needed. `POST /api/reflect` is the manual twin. |
+| 2.5 | **Memory UI + `nest memory`.** `GET/POST /api/memory` edits the three files by closed-set label (never a path from the wire); settings pane renders them as textareas with a save button + "reflect now". `nest memory` prints profile + facts. | `main.rs`, `shell.rs`, `web/` | |
 
-**Tests:** `memory.rs` (dedup, append, profile injection into `build_prompt`);
-reflect over fixture receipts produces digest + archive.
-**Merge gate:** run a run stating a preference → fact lands in `facts.md` →
-next hatch's prompt contains it → `reflect` prunes a planted duplicate.
+**Tests:** dedup/provenance append; project+personal merge + cap; echo-skip;
+scripted-provider extraction round-trip; reflect digest + archive + inbox
+note; save_file label whitelist; `/api/memory` + `/api/reflect` e2e.
+**Merge gate:** met — 120 nest tests green; `nest reflect` digests a
+fixture roost and archives duplicates end-to-end; a scripted provider's
+facts land in `facts.md` with run-id provenance.
 
 ---
 

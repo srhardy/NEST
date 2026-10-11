@@ -323,6 +323,15 @@ impl Duty {
             || self.spec.bot.is_none()
     }
 
+    /// `action: reflect` doesn't dispatch at all — it runs the memory
+    /// reflect pass (digest + fact pruning) in-process.
+    pub fn wants_reflect(&self) -> bool {
+        self.spec
+            .action
+            .as_deref()
+            .is_some_and(|a| a.eq_ignore_ascii_case("reflect"))
+    }
+
     /// Remote-triggered runs with `reply: quiet` skip the outbox write.
     pub fn quiet(&self) -> bool {
         self.spec

@@ -178,6 +178,9 @@ pub fn build_prompt(agent: &AgentSpec, task: &str, dirs: &NestDirs) -> String {
             }
         }
     }
+    if let Some(memory) = crate::memory::prompt_block(dirs) {
+        prompt.push_str(&format!("\n\n## Memory\n\n{memory}\n"));
+    }
     prompt.push_str(&format!("\n\n## Task\n\n{task}\n"));
     prompt
 }

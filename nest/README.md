@@ -19,6 +19,7 @@ events, collect results, no control plane. A unified provider layer
 | **forage** | the provider layer — prompt in, completion out (echo stub + any local CLI today; the free-tier failover proxy plugs in later) |
 | **imprint** | a bot's first verified run — a bot that hasn't run isn't done |
 | **inbox** | the triage queue: `~/.nest/inbox/*.json` — approval cards from the launch gate and notes from routine runs; unresolved first, resolved stays as history |
+| **memory** | `~/.nest/memory/` + `.nest/memory/` — `facts.md` learned lines with run-id provenance, `user_profile.md` yours to write; injected as `## Memory` into every prompt |
 
 ## What it reads
 
@@ -110,6 +111,8 @@ nest brood "update the docs"          # brood picks: routing → boss → fallba
 nest clutch boss "task one" "task two" # one bot, many tasks, in parallel
 nest roost                            # recent runs (receipts)
 nest find <words>                     # search receipts, sessions, agents, skills, memory
+nest memory                           # the learned facts + your profile
+nest reflect                          # digest the roost → memory/daily/, prune duplicate facts
 nest imprint boss "first look"        # first verified run — 🐣 imprinted
 nest ask "prompt"                     # routed provider call (free-first failover)
 nest providers                        # declared backends + readiness

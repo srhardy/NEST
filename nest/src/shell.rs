@@ -469,6 +469,15 @@ impl Shell {
     /// id so callers can schedule the auto-feather check on it.
     /// `action: brood` forces the council; otherwise a named bot hatches.
     fn fire_duty(&self, d: &patrol::Duty) -> Option<String> {
+        if d.wants_reflect() {
+            // not a dispatch — the memory reflect pass in-process;
+            // its digest lands in the inbox itself
+            let dirs = self.dirs.clone();
+            thread::spawn(move || {
+                let _ = crate::memory::reflect(&dirs);
+            });
+            return None;
+        }
         let prompt = format!("[routine '{}'] {}", d.spec.name, d.spec.prompt);
         let res = if d.wants_brood() {
             self.start_brood(&prompt, None)
@@ -549,6 +558,20 @@ impl Shell {
         let _ = std::fs::write(
             path,
             "# providers — the free-first router tries these top-to-bottom, first answer wins.\n#\n# [[providers]]            # any local CLI: prompt on stdin, answer on stdout\n# name = \"local-helper\"\n# kind = \"command\"\n# program = \"ollama\"       # or llm, claude -p, …\n# args = [\"run\", \"qwen3\"]\n# cost = \"free\"            # free | cheap | paid — free always answers first\n#\n# [[providers]]            # ollama shorthand — the free-forever local\n# name = \"ollama-qwen\"\n# kind = \"ollama\"\n# model = \"qwen3\"\n# cost = \"free\"\n#\n# [[providers]]            # any OpenAI-compatible endpoint — free tiers included\n# name = \"openrouter-free\"\n# kind = \"openai\"\n# base_url = \"https://openrouter.ai/api/v1\"\n# model = \"deepseek/deepseek-chat-v3-0324:free\"\n# api_key_env = \"OPENROUTER_KEY\"   # env var name, never the key itself\n# cost = \"free\"\n# limit = 50               # CodexBar-style cap…\n# window = \"24h\"           # …per rolling window (5h, 24h, 7d); spent providers sit out\n",
+        );
+    }
+
+    /// Seed the daily reflect — the only routine the nest ships. Written
+    /// disabled so it never surprises: flip `enabled` for a 09:00-UTC
+    /// digest + memory fact prune.
+    fn ensure_reflect_routine(&self) {
+        let path = self.dirs.home.join("automations.toml");
+        if path.exists() {
+            return;
+        }
+        let _ = std::fs::write(
+            path,
+            "# automations — routines the patrol watches. Triggers: `schedule` (5-field cron,\n# UTC) or `event` = `file-change:<glob>` | `git-push` | `app:<name>`.\n#\n# The nest ships one routine: reflect — a daily digest of the roost plus memory\n# fact pruning into ~/.nest/memory/. Disabled by default; flip enabled to get it.\n[[automation]]\nname = \"reflect\"\nprompt = \"memory reflect\"\nschedule = \"0 9 * * *\"\naction = \"reflect\"\nenabled = false\n",
         );
     }
 
@@ -1107,6 +1130,7 @@ impl Shell {
                 }
             };
             roost::record(&roost_dir, &receipt).ok();
+            crate::memory::extract_async(dirs.clone(), receipt.clone());
             run.finish(receipt);
         });
         Ok(run_id)
@@ -1428,12 +1452,13 @@ impl Shell {
     fn finish_dispatch(
         run: &Run,
         dispatch: brood::Dispatch,
-        roost_dir: &Path,
+        dirs: &NestDirs,
         perch: &dyn Perch,
         task: &str,
     ) {
         for receipt in dispatch.all_receipts() {
-            roost::record(roost_dir, receipt).ok();
+            roost::record(&dirs.roost(), receipt).ok();
+            crate::memory::extract_async(dirs.clone(), receipt.clone());
         }
         match dispatch.winner {
             Some(receipt) => run.finish(receipt),
@@ -1511,6 +1536,7 @@ impl Shell {
                             tail: vec![text],
                         };
                         roost::record(&roost_dir, &receipt).ok();
+                        crate::memory::extract_async(dirs.clone(), receipt.clone());
                         run.finish(receipt);
                         return;
                     }
@@ -1553,7 +1579,7 @@ impl Shell {
                         crate::inbox::add(&dirs, &item).ok();
                     }
                     drop(withheld);
-                    Self::finish_dispatch(&run, dispatch, &roost_dir, perch.as_ref(), &task)
+                    Self::finish_dispatch(&run, dispatch, &dirs, perch.as_ref(), &task)
                 }
                 Err(e) => {
                     run.emit(json!({"bot": "brood", "peep": {"kind": "failed", "error": format!("{e:#}")}}));
@@ -1723,6 +1749,7 @@ pub fn serve_on(dirs: NestDirs, cwd: PathBuf, listener: std::net::TcpListener) -
     let shell = Arc::new(Shell::new(dirs, cwd));
     shell.ensure_eggbot();
     shell.ensure_providers();
+    shell.ensure_reflect_routine();
     for w in shell.boot_services() {
         eprintln!("nest: {w}");
     }
@@ -1753,6 +1780,7 @@ pub fn daemon(dirs: NestDirs, cwd: PathBuf, webhook: Option<&str>) -> Result<()>
     let shell = Arc::new(Shell::new(dirs, cwd));
     shell.ensure_eggbot();
     shell.ensure_providers();
+    shell.ensure_reflect_routine();
     for w in shell.boot_services() {
         eprintln!("nest: {w}");
     }
@@ -2017,6 +2045,43 @@ fn route<'a>(
         (&Method::Get, "/api/inbox") => {
             json_response(json!({"items": crate::inbox::list(&shell.dirs)}))
         }
+        // memory files — the UI is a viewer/editor, not a service
+        (&Method::Get, "/api/memory") => {
+            let files: Vec<Value> = crate::memory::files(&shell.dirs)
+                .iter()
+                .map(|(label, path, content)| {
+                    json!({
+                        "label": label,
+                        "path": path.display().to_string(),
+                        "content": content,
+                    })
+                })
+                .collect();
+            json_response(json!({"files": files}))
+        }
+        (&Method::Post, "/api/memory") => {
+            let body = read_body(request);
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            let result = crate::memory::save_file(
+                &shell.dirs,
+                v["label"].as_str().unwrap_or_default(),
+                v["content"].as_str().unwrap_or_default(),
+            );
+            match result {
+                Ok(path) => json_response(json!({"saved": path.display().to_string()})),
+                Err(e) => json_response(json!({"error": format!("{e:#}")})),
+            }
+        }
+        // `nest reflect` over HTTP — the routine's manual twin
+        (&Method::Post, "/api/reflect") => match crate::memory::reflect(&shell.dirs) {
+            Ok(report) => json_response(json!({
+                "digest": report.digest.display().to_string(),
+                "receipts_seen": report.receipts_seen,
+                "facts_kept": report.facts_kept,
+                "facts_archived": report.facts_archived,
+            })),
+            Err(e) => json_response(json!({"error": format!("{e:#}")})),
+        },
         (&Method::Get, "/api/find") => {
             // `?q=` — universal search over every file the nest writes
             // (the router strips the query, so read it off the raw url)

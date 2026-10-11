@@ -29,6 +29,7 @@ pub mod forage;
 pub mod hatchling;
 pub mod home;
 pub mod inbox;
+pub mod memory;
 pub mod patrol;
 pub mod peep;
 pub mod perch;

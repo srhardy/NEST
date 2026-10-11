@@ -1,2 +1,5 @@
 target/
 __pycache__/
+
+# devin local config (machine-local permissions)
+.devin/config.local.json

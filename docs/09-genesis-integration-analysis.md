@@ -55,11 +55,13 @@ perch-like crate over HTTP).
    table. The forage router already exists — add a `brood` mode where a
    cheap/free provider classifies task → bot, with keyword table as
    deterministic fallback.
-4. **Memory layers.** NEST's only memory is hand-authored SKILL.md. Add:
-   extracted facts (`~/.nest/memory/*.md` per bot or global, written by a
-   feather-style post-run distill), project memory (per-cwd), and a
-   reflection routine (`[[automation]]` that reads the roost and prunes/
-   summarizes). Same file philosophy — no DB needed to start.
+4. **Memory layers.** ~~NEST's only memory is hand-authored SKILL.md.~~
+   **Done (Phase 2):** `~/.nest/memory/` + project `.nest/memory/` —
+   `facts.md` learned lines with run-id provenance (post-run forage
+   distill, dedup on append), `user_profile.md` hand-editable, injected
+   as `## Memory` into every prompt, plus `nest reflect` — a digest +
+   prune routine runnable manually, over `/api/reflect`, or as an
+   `action: reflect` automation (seeded disabled).
 5. **Security levels.** NEST's egress/budget are *prompt text* — the harness
    is politely asked. Even without a full sandbox: validate `bot.egress`
    against perch capability (opencode/pi can't enforce egress at all → warn,

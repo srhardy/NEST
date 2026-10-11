@@ -1454,3 +1454,59 @@ fn find_returns_cross_type_hits() {
     let hits: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert!(hits["results"].as_array().unwrap().is_empty());
 }
+
+/// `/api/memory` is a file editor over `~/.nest/memory/`; `/api/reflect`
+/// runs the digest + prune on demand.
+#[test]
+fn memory_endpoints_edit_and_reflect() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let port = start(&home, t.path());
+
+    // files exist even before any run — profile + facts, empty content
+    let raw = body(&http(port, "GET", "/api/memory", None));
+    let mem: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let labels: Vec<&str> = mem["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["label"].as_str().unwrap())
+        .collect();
+    assert!(
+        labels.contains(&"profile") && labels.contains(&"facts"),
+        "{labels:?}"
+    );
+
+    // write a profile + a fact; unknown labels are refused
+    let r = body(&http(
+        port,
+        "POST",
+        "/api/memory",
+        Some(r#"{"label":"profile","content":"Sam — terse answers\n"}"#),
+    ));
+    assert!(r.contains("saved"), "{r}");
+    let r = body(&http(
+        port,
+        "POST",
+        "/api/memory",
+        Some(r#"{"label":"facts","content":"likes rust\n"}"#),
+    ));
+    assert!(r.contains("saved"), "{r}");
+    let r = body(&http(
+        port,
+        "POST",
+        "/api/memory",
+        Some(r#"{"label":"../../roost/x","content":"nope"}"#),
+    ));
+    assert!(r.contains("unknown memory file"), "{r}");
+
+    // the written profile now rides every prompt via /api/memory content
+    let raw = body(&http(port, "GET", "/api/memory", None));
+    assert!(raw.contains("terse answers"), "{raw}");
+
+    // reflect over HTTP — digest + inbox note even with zero runs
+    let r = body(&http(port, "POST", "/api/reflect", Some("{}")));
+    let r: serde_json::Value = serde_json::from_str(&r).unwrap();
+    assert!(r["digest"].as_str().is_some(), "{r}");
+    assert_eq!(r["facts_kept"], 1);
+}

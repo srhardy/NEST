@@ -82,6 +82,12 @@ enum Cmd {
         /// The query, in words.
         query: Vec<String>,
     },
+    /// Show the memory: profile and learned facts, personal then project.
+    Memory,
+    /// Digest the roost into memory/daily/ and prune stale facts
+    /// (duplicates archive, never delete). Ships as a disabled
+    /// `reflect` automation too — flip `enabled` for a daily run.
+    Reflect,
     /// List declared providers in router order (free → cheap → paid).
     Providers,
     /// Open the shell — the one-window app over the engine.
@@ -209,6 +215,7 @@ fn run_bot(
     });
     let path = roost::record(&dirs.roost(), &receipt)?;
     println!("  receipt: {}", path.display());
+    nest::memory::extract_async(dirs.clone(), receipt.clone());
     Ok(receipt)
 }
 
@@ -305,6 +312,7 @@ fn main() -> Result<()> {
             for receipt in dispatch.all_receipts() {
                 let path = roost::record(&dirs.roost(), receipt)?;
                 println!("  receipt: {}", path.display());
+                nest::memory::extract_async(dirs.clone(), receipt.clone());
             }
             match &dispatch.winner {
                 Some(winner) if winner.hard_won => println!(
@@ -339,6 +347,7 @@ fn main() -> Result<()> {
             let mut failed = 0;
             for receipt in &receipts {
                 let path = roost::record(&dirs.roost(), receipt)?;
+                nest::memory::extract_async(dirs.clone(), receipt.clone());
                 println!(
                     "  {} → {:?} (steps {}) — receipt: {}",
                     receipt.task,
@@ -403,6 +412,35 @@ fn main() -> Result<()> {
                     println!("          {}", hit.snippet);
                 }
             }
+        }
+        Cmd::Memory => {
+            let (dirs, _) = resolve(&cli)?;
+            let mut any = false;
+            for (label, path, content) in nest::memory::files(&dirs) {
+                if content.trim().is_empty() {
+                    continue;
+                }
+                any = true;
+                println!("== {label} — {}", path.display());
+                println!("{}", content.trim_end());
+                println!();
+            }
+            if !any {
+                println!(
+                    "nothing remembered yet — facts land in ~/.nest/memory/facts.md after runs"
+                );
+            }
+        }
+        Cmd::Reflect => {
+            let (dirs, _) = resolve(&cli)?;
+            let report = nest::memory::reflect(&dirs)?;
+            println!(
+                "reflect: {} runs digested, {} facts kept, {} archived → {}",
+                report.receipts_seen,
+                report.facts_kept,
+                report.facts_archived,
+                report.digest.display()
+            );
         }
         Cmd::Providers => {
             let (dirs, _) = resolve(&cli)?;

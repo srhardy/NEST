@@ -31,6 +31,11 @@ description: How to run and end-to-end test the NEST engine + web shell and the 
 - A routine firing (`POST /api/duties/<name>/fire` or a real trigger) drops a `note` item once its receipt lands — poll `/api/inbox` ~10s.
 - `GET /api/find?q=<words>` / `nest find <words>` — one scored stream (`id` > `title` > `body`, top 50, `kind` = receipt|session|skill|agent|memory) over every file the nest writes. NOTE: the HTTP router strips `?query` before matching — handlers read `request.url()` for params (same pattern as `/api/sessions?bot=`).
 
+## Memory (`~/.nest/memory/` + `.nest/memory/` project-shadow)
+- `facts.md` — one learned fact per line, `# <run-id>` provenance; `user_profile.md` hand-editable; `archive.md` gets reflect's prunes; `daily/` gets reflect digests. `## Memory` (profile + merged facts, ~4KB cap) is injected into every hatch's prompt — echo receipts show it verbatim.
+- Extraction: every `Done` receipt spawns a background forage distill → dedup → `facts.md`. Echo-provider homes skip silently; a scripted `kind = "command"` provider whose program `printf`s fact lines makes it deterministic (use an absolute `program` like `/bin/sh` — PATH lookup varies in tests).
+- `nest memory` prints profile + facts; `nest reflect` / `POST /api/reflect` digests the roost → `memory/daily/<ms>.md`, archives duplicate facts (never deletes), drops an inbox note; `GET/POST /api/memory` edits files by closed-set label (`profile`/`facts`/`project` — anything else → `unknown memory file`). `action = "reflect"` on a `[[automation]]` runs it in-process; seeded disabled in fresh `automations.toml`.
+
 ## Webhook daemon (`nest daemon --webhook <addr>`)
 - One process runs BOTH the remotes watcher (~3s tick) and the HTTP listener; start it from a writable cwd (e.g. `/tmp/nest-cwd`) with `nohup` and check the log for `webhook on <addr>`.
 - Remote fixture: `~/.nest/remotes/<name>/token` (raw token string) + `inbox/` dir. Every matched path needs `Authorization: Bearer <token>` — missing/wrong token or ghost remote → 403.

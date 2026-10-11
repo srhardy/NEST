@@ -182,7 +182,6 @@ fn markdown_dirs(dirs: &NestDirs, needle: &str, hits: &mut Vec<Scored>) {
 mod tests {
     use super::*;
     use crate::hatchling::Receipt;
-    use std::collections::BTreeMap;
     use std::fs;
 
     fn dirs(tmp: &tempfile::TempDir) -> NestDirs {

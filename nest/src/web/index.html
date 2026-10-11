@@ -231,6 +231,10 @@
         <h3 style="margin-top:18px">learned skills — the roster's memory</h3>
         <p style="color:var(--dim);margin:4px 0 0">feathered from runs (manual 🪶 or auto) — bots pick them up via <code>skills:</code> in agent.toml.</p>
         <table class="runs" style="margin-top:10px"><thead><tr><th>skill</th><th>author</th><th>run</th><th>when to use</th></tr></thead><tbody id="skills"></tbody></table>
+        <h3 style="margin-top:18px">memory — what the nest knows</h3>
+        <p style="color:var(--dim);margin:4px 0 0">plain files in <code>~/.nest/memory/</code>, injected as <code>## Memory</code> into every prompt. the profile is yours to write; facts are learned from runs (<code>nest reflect</code> digests and prunes).</p>
+        <div id="memory-files"></div>
+        <div style="margin-top:8px"><button class="pill" id="save-memory">save memory</button> <button class="pill" id="reflect-now" style="margin-left:8px">reflect now</button></div>
         <h3 style="margin:18px 0 8px">settings.md</h3>
         <textarea id="settings-md" spellcheck="false"></textarea>
         <div style="margin-top:8px"><button class="pill" id="save-settings">save</button></div>
@@ -636,6 +640,29 @@ async function loadSettings() {
   $('#skills').innerHTML = (state.skills || []).map(s =>
     `<tr><td>${esc(s.name)}</td><td>${esc(s.authored_by || '—')}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.run || '')}">${esc(s.run || '—')}</td><td>${esc(s.description || '—')}</td></tr>`
   ).join('') || '<tr><td colspan="4" style="color:var(--dim)">no learned skills yet — feather a run in activity 🪶</td></tr>';
+  const mem = await api('/api/memory');
+  $('#memory-files').innerHTML = (mem.files || []).map(f => `
+    <div style="margin-top:10px">
+      <div style="color:var(--dim);font-size:11px;margin-bottom:4px">${esc(f.label)} — ${esc(f.path)}</div>
+      <textarea class="memory-md" data-label="${esc(f.label)}" spellcheck="false" style="width:100%;min-height:${f.label === 'profile' ? '80px' : '140px'};background:var(--card);border:1px solid var(--edge);border-radius:10px;color:var(--text);font:inherit;padding:10px;resize:vertical">${esc(f.content)}</textarea>
+    </div>`).join('') || '<p style="color:var(--dim)">no memory files yet</p>';
+  const saveMem = $('#save-memory');
+  if (saveMem && !saveMem.dataset.wired) {
+    saveMem.dataset.wired = '1';
+    saveMem.onclick = async () => {
+      for (const ta of document.querySelectorAll('.memory-md')) {
+        const r = await api('/api/memory', { label: ta.dataset.label, content: ta.value });
+        if (r.error) { toast('memory save failed — ' + r.error); return; }
+      }
+      toast('memory saved');
+      loadSettings();
+    };
+    $('#reflect-now').onclick = async () => {
+      const r = await api('/api/reflect', {});
+      toast(r.error ? 'reflect failed — ' + r.error : `reflected — ${r.receipts_seen} runs, ${r.facts_kept} facts kept, ${r.facts_archived} archived`);
+      await refresh();
+    };
+  }
   const shareGo = $('#share-go');
   if (shareGo && !shareGo.dataset.wired) {
     shareGo.dataset.wired = '1';
