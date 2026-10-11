@@ -1213,8 +1213,7 @@ impl Shell {
         let name = name.to_string();
         thread::spawn(move || {
             run.emit_peep(&name, &Peep::Spawned { pid: 0 });
-            let status = std::process::Command::new("sh")
-                .args(["-c", &cmd])
+            let status = service_command(&cmd)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -1989,7 +1988,7 @@ fn header_value<'r>(request: &'r tiny_http::Request, name: &'static str) -> Opti
 /// that isn't loopback is rejected. No Origin header means a non-browser
 /// client (curl), which is allowed.
 fn origin_ok(request: &tiny_http::Request) -> bool {
-    header_value(request, "Origin").map_or(true, loopback_origin)
+    header_value(request, "Origin").is_none_or(loopback_origin)
 }
 
 /// DNS-rebinding guard, applied to every request including reads: a
@@ -1997,7 +1996,7 @@ fn origin_ok(request: &tiny_http::Request) -> bool {
 /// header that isn't loopback is rejected. A request with no Host header
 /// is a bare HTTP/1.0 client, never a browser.
 fn host_ok(request: &tiny_http::Request) -> bool {
-    header_value(request, "Host").map_or(true, loopback_authority)
+    header_value(request, "Host").is_none_or(loopback_authority)
 }
 
 /// Fixed-length response over a boxed reader (the route return type).

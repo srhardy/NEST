@@ -77,7 +77,7 @@ pub trait Perch: Send + Sync {
             FailureKind::Exit
         }
     }
-    /// The one-click install command (run via `sh -c`), when this perch
+    /// The one-click install command (run via `sh -c`, or `cmd /C` on Windows), when this perch
     /// can install itself. Builtin stubs return `None`.
     fn install_cmd(&self) -> Option<&'static str> {
         None
@@ -538,6 +538,25 @@ impl Perch for Pi {
     }
 }
 
+/// How the builtin stub perches run a one-line script: `sh -c` where there
+/// is a POSIX shell, PowerShell on Windows (every Windows has it; `cmd`'s
+/// `echo` can't print a multi-line prompt). Output is forced to UTF-8.
+fn stub_shell(unix: &str, windows: &str) -> (String, Vec<String>) {
+    if cfg!(windows) {
+        (
+            "powershell".into(),
+            vec![
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                format!("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); {windows}"),
+            ],
+        )
+    } else {
+        ("sh".into(), vec!["-c".into(), unix.into()])
+    }
+}
+
 /// `echo` — builtin stub perch: prints the prompt and exits 0.
 /// Proves the spine end-to-end on machines with no harness installed.
 pub struct Echo;
@@ -557,11 +576,11 @@ impl Perch for Echo {
     ) -> Launch {
         let mut env = BTreeMap::new();
         env.insert("NEST_PROMPT".into(), build_prompt(agent, task, dirs));
-        Launch {
-            program: "sh".into(),
-            args: vec!["-c".into(), "echo \"$NEST_PROMPT\"".into()],
-            env,
-        }
+        let (program, args) = stub_shell(
+            "echo \"$NEST_PROMPT\"",
+            "[Console]::Out.WriteLine($env:NEST_PROMPT)",
+        );
+        Launch { program, args, env }
     }
     fn parse(&self, line: &str) -> Option<Peep> {
         Some(Peep::Output { text: line.into() })
@@ -585,12 +604,13 @@ impl Perch for Fail {
         _dirs: &NestDirs,
         _session: Option<&str>,
     ) -> Launch {
+        let (program, args) = stub_shell(
+            "echo 'stub perch failing as designed' >&2; exit 1",
+            "[Console]::Error.WriteLine('stub perch failing as designed'); exit 1",
+        );
         Launch {
-            program: "sh".into(),
-            args: vec![
-                "-c".into(),
-                "echo 'stub perch failing as designed' >&2; exit 1".into(),
-            ],
+            program,
+            args,
             env: BTreeMap::new(),
         }
     }

@@ -23,6 +23,30 @@ jobs:
           cargo build
           cargo test
 
+  rust-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            spoke
+            nest
+      - name: unix tools for test fixtures (sh, cat)
+        shell: pwsh
+        run: echo "C:\Program Files\Git\usr\bin" >> $env:GITHUB_PATH
+      - name: build + test spoke
+        working-directory: spoke
+        run: |
+          cargo build
+          cargo test
+      - name: build + test nest
+        working-directory: nest
+        run: |
+          cargo build
+          cargo test
+
   desktop:
     runs-on: ubuntu-latest
     steps:
