@@ -96,7 +96,7 @@ fn bird_icon() -> Image<'static> {
 fn get(port: u16, path: &str) -> Option<String> {
     use std::io::{Read, Write};
     let mut s = TcpStream::connect(("127.0.0.1", port)).ok()?;
-    s.write_all(format!("GET {path} HTTP/1.0\r\nHost: x\r\n\r\n").as_bytes())
+    s.write_all(format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes())
         .ok()?;
     let mut buf = String::new();
     s.read_to_string(&mut buf).ok()?;

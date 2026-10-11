@@ -451,7 +451,7 @@ mod tests {
         std::fs::create_dir_all(&dirs.home).unwrap();
         std::fs::write(
             dirs.home.join("providers.toml"),
-            "[[providers]]\nname = \"mem-llm\"\nkind = \"command\"\nprogram = \"/bin/sh\"\nargs = [\"-c\", \"printf 'the project uses zig cc for linking\\n- terse commits\\n'\"]\ncost = \"free\"\n",
+            "[[providers]]\nname = \"mem-llm\"\nkind = \"command\"\nprogram = \"sh\"\nargs = [\"-c\", \"printf 'the project uses zig cc for linking\\n- terse commits\\n'\"]\ncost = \"free\"\n",
         )
         .unwrap();
         let added = extract(&dirs, &receipt("link the binary")).unwrap();

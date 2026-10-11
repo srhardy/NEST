@@ -71,10 +71,12 @@ fn http_headers(
         .collect();
     let req = match body {
         Some(b) => format!(
-            "{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nContent-Type: application/json\r\n{extra}Connection: close\r\n\r\n{b}",
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\nContent-Type: application/json\r\n{extra}Connection: close\r\n\r\n{b}",
             b.len()
         ),
-        None => format!("{method} {path} HTTP/1.1\r\nHost: x\r\n{extra}Connection: close\r\n\r\n"),
+        None => format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{extra}Connection: close\r\n\r\n"
+        ),
     };
     s.write_all(req.as_bytes()).unwrap();
     let mut raw = Vec::new();
@@ -1007,6 +1009,70 @@ fn cross_origin_writes_are_blocked() {
 }
 
 #[test]
+fn lookalike_origins_cannot_write() {
+    let t = tempfile::tempdir().unwrap();
+    let port = start(&t.path().join("home"), t.path());
+
+    for origin in [
+        "http://localhost.evil.com",
+        "http://127.0.0.1.evil.com",
+        "http://127.0.0.1@evil.com",
+        "null",
+    ] {
+        let res = http_headers(
+            port,
+            "POST",
+            "/api/settings",
+            Some(r#"{"content":"pwned"}"#),
+            &[("Origin", origin)],
+        );
+        assert!(res.contains("403"), "{origin} should be refused: {res}");
+    }
+}
+
+#[test]
+fn rebound_host_is_refused_for_reads_and_writes() {
+    let t = tempfile::tempdir().unwrap();
+    let port = start(&t.path().join("home"), t.path());
+
+    for host in ["evil.com", "localhost.evil.com", "evil.com:4747"] {
+        for (method, path, body) in [
+            ("GET", "/api/state", None),
+            ("GET", "/api/sessions", None),
+            ("POST", "/api/settings", Some(r#"{"content":"x"}"#)),
+        ] {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(10))).ok();
+            let len = body.map_or(0, str::len);
+            let req = format!(
+                "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{}",
+                body.unwrap_or("")
+            );
+            s.write_all(req.as_bytes()).unwrap();
+            let mut raw = Vec::new();
+            s.read_to_end(&mut raw).unwrap_or_default();
+            let raw = String::from_utf8_lossy(&raw);
+            assert!(raw.contains("403"), "{method} {path} Host {host}: {raw}");
+            assert!(!raw.contains("agents"), "state leaked to {host}: {raw}");
+        }
+    }
+
+    for host in ["localhost", &format!("localhost:{port}")] {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).ok();
+        s.write_all(
+            format!("GET /api/state HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .unwrap();
+        let mut raw = Vec::new();
+        s.read_to_end(&mut raw).unwrap_or_default();
+        let raw = String::from_utf8_lossy(&raw);
+        assert!(raw.contains("agents"), "Host {host} should work: {raw}");
+    }
+}
+
+#[test]
 fn bad_agent_file_warns_but_keeps_roster() {
     let t = tempfile::tempdir().unwrap();
     let home = t.path().join("home");
@@ -1042,7 +1108,7 @@ fn sse_stream_does_not_block_api() {
     let stream = thread::spawn(move || {
         let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(10))).ok();
-        s.write_all(b"GET /api/runs/run-1/events HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        s.write_all(format!("GET /api/runs/run-1/events HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes())
             .unwrap();
         let mut raw = Vec::new();
         s.read_to_end(&mut raw).unwrap_or_default();

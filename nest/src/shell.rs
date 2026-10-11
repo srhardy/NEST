@@ -1939,29 +1939,65 @@ fn webhook_route<'a>(
     }
 }
 
+/// `host[:port]` where host is exactly a loopback name. Exact match, not a
+/// prefix: `localhost.evil.com` and `127.0.0.1.evil.com` must not pass.
+fn loopback_authority(authority: &str) -> bool {
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        let Some((host, tail)) = rest.split_once(']') else {
+            return false;
+        };
+        match tail {
+            "" => (host, None),
+            _ => match tail.strip_prefix(':') {
+                Some(port) => (host, Some(port)),
+                None => return false,
+            },
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        }
+    };
+    if let Some(port) = port {
+        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+    }
+    ["localhost", "127.0.0.1", "::1"]
+        .iter()
+        .any(|h| host.eq_ignore_ascii_case(h))
+}
+
+fn loopback_origin(origin: &str) -> bool {
+    origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+        .is_some_and(loopback_authority)
+}
+
+fn header_value<'r>(request: &'r tiny_http::Request, name: &'static str) -> Option<&'r str> {
+    request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv(name))
+        .map(|h| h.value.as_str())
+}
+
 /// Loopback-only writes: a page on another origin can fire a form/fetch
 /// at this server without ever reading the response, so an Origin header
 /// that isn't loopback is rejected. No Origin header means a non-browser
 /// client (curl), which is allowed.
 fn origin_ok(request: &tiny_http::Request) -> bool {
-    let Some(origin) = request
-        .headers()
-        .iter()
-        .find(|h| h.field.equiv("Origin"))
-        .map(|h| h.value.as_str())
-    else {
-        return true;
-    };
-    [
-        "http://127.0.0.1",
-        "https://127.0.0.1",
-        "http://localhost",
-        "https://localhost",
-        "http://[::1]",
-        "https://[::1]",
-    ]
-    .iter()
-    .any(|p| origin.starts_with(p))
+    header_value(request, "Origin").map_or(true, loopback_origin)
+}
+
+/// DNS-rebinding guard, applied to every request including reads: a
+/// rebound page reaches this server under its own hostname, so a Host
+/// header that isn't loopback is rejected. A request with no Host header
+/// is a bare HTTP/1.0 client, never a browser.
+fn host_ok(request: &tiny_http::Request) -> bool {
+    header_value(request, "Host").map_or(true, loopback_authority)
 }
 
 /// Fixed-length response over a boxed reader (the route return type).
@@ -2048,6 +2084,9 @@ fn route<'a>(
     path: &str,
     request: &mut tiny_http::Request,
 ) -> Response<Box<dyn Read + Send + 'a>> {
+    if !host_ok(request) {
+        return respond("forbidden host".into(), "text/plain", 403);
+    }
     if !matches!(method, &Method::Get) && !origin_ok(request) {
         return respond("forbidden origin".into(), "text/plain", 403);
     }
@@ -2632,6 +2671,60 @@ fn route<'a>(
             }
         }
         _ => respond("not found".into(), "text/plain", 404),
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+
+    #[test]
+    fn loopback_origins_pass() {
+        for o in [
+            "http://127.0.0.1",
+            "http://127.0.0.1:4747",
+            "https://localhost:1",
+            "http://LOCALHOST:4747",
+            "http://[::1]",
+            "http://[::1]:4747",
+        ] {
+            assert!(loopback_origin(o), "{o} should pass");
+        }
+    }
+
+    #[test]
+    fn lookalike_origins_are_rejected() {
+        for o in [
+            "http://localhost.evil.com",
+            "http://localhost.evil.com:4747",
+            "http://127.0.0.1.evil.com",
+            "http://127.0.0.1:80@evil.com",
+            "http://127.0.0.1@evil.com",
+            "http://evil.com/127.0.0.1",
+            "http://evil.com#@127.0.0.1",
+            "http://localhostevil.com",
+            "http://127.0.0.10",
+            "http://[::1]x",
+            "http://[::1",
+            "http://127.0.0.1:",
+            "http://127.0.0.1:abc",
+            "https://evil.example",
+            "null",
+            "",
+            "ftp://127.0.0.1",
+        ] {
+            assert!(!loopback_origin(o), "{o} should be rejected");
+        }
+    }
+
+    #[test]
+    fn host_authority_checks() {
+        assert!(loopback_authority("127.0.0.1:4747"));
+        assert!(loopback_authority("localhost:4747"));
+        assert!(loopback_authority("[::1]:4747"));
+        assert!(!loopback_authority("evil.com:4747"));
+        assert!(!loopback_authority("localhost.evil.com"));
+        assert!(!loopback_authority("x"));
     }
 }
 
