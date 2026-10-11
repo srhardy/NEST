@@ -76,6 +76,12 @@ enum Cmd {
         provider: Option<String>,
         prompt: Vec<String>,
     },
+    /// Search everything the nest writes — receipts, sessions, skills,
+    /// agents, memory — one query over the file surfaces.
+    Find {
+        /// The query, in words.
+        query: Vec<String>,
+    },
     /// List declared providers in router order (free → cheap → paid).
     Providers,
     /// Open the shell — the one-window app over the engine.
@@ -382,6 +388,20 @@ fn main() -> Result<()> {
                     "{} did not imprint — a bot that hasn't run isn't done",
                     agent.name
                 );
+            }
+        }
+        Cmd::Find { query } => {
+            let (dirs, _) = resolve(&cli)?;
+            let q = query.join(" ");
+            let hits = nest::find::find(&dirs, &q);
+            if hits.is_empty() {
+                println!("nothing found for '{q}'");
+            }
+            for hit in hits {
+                println!("{:<8} {:<44} {}", hit.kind, hit.id, hit.title);
+                if !hit.snippet.is_empty() {
+                    println!("          {}", hit.snippet);
+                }
             }
         }
         Cmd::Providers => {

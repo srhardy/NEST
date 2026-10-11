@@ -69,9 +69,13 @@ perch-like crate over HTTP).
    status. A permission denial or budget kill shouldn't re-run the same task
    on a different bot — classify the failure (spawn | tool-denied | budget |
    crash) and only escalate crash/failed-launch.
-7. **Unified search.** Chats + receipts + skills + agents are all files —
+7. **Unified search.** ~~Chats + receipts + skills + agents are all files —
    a `nest find <q>` over them (index on roost + skills + sessions) is a
-   cheap version of Genesis's universal search.
+   cheap version of Genesis's universal search.~~ **Done (Phase 3):**
+   `nest find`/`/api/find` scans receipts, sessions, agents, skills, and
+   memory into one scored stream — plus a persisted `~/.nest/inbox/`
+   (approval cards from the launch gate, routine-run notes) rendered as
+   cards in the shell.
 
 ## 4. Concrete flaws found in NEST today
 
@@ -82,7 +86,8 @@ Ordered by severity:
    absent.~~ **Fixed (Phase 1):** the launch-time gate emits `Ask` peeps
    for every unapproved `ask`-permission tool before hatch; `approved_tools`
    on the API or `--yes`/tty-confirm on the CLI promotes them to allow for
-   that run only. UI approval cards remain Phase 3.3.
+   that run only; Phase 3 added the UI cards — denied asks surface as
+   inbox items that approve-and-re-run the task promoted.
 2. **`max_steps` doesn't work on most perches.** ~~Only `Peep::Step`
    increments the counter; `echo`, `opencode`, and parts of `pi` emit only
    `Output`, so budget enforcement silently never trips.~~ **Fixed (Phase

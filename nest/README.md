@@ -18,6 +18,7 @@ events, collect results, no control plane. A unified provider layer
 | **clutch** | a batch of hatchlings run in parallel (the council pattern's primitive) |
 | **forage** | the provider layer — prompt in, completion out (echo stub + any local CLI today; the free-tier failover proxy plugs in later) |
 | **imprint** | a bot's first verified run — a bot that hasn't run isn't done |
+| **inbox** | the triage queue: `~/.nest/inbox/*.json` — approval cards from the launch gate and notes from routine runs; unresolved first, resolved stays as history |
 
 ## What it reads
 
@@ -43,6 +44,10 @@ Everything Spoke projects, the engine consumes:
   clicking a roster bot chats it directly via `hatch`. Peeps stream live
   over SSE as loop chips — the watch-it-think view.
 - **Activity** — the roost's receipts.
+- **Inbox** — approval cards (a bot's `ask` tools stayed denied → approve
+  re-runs the same task promoted; dismiss resolves) and notes from
+  routine runs — the queue for things that happened while you were away
+  (`GET /api/inbox`, `POST /api/approvals/<id>`).
 - **Settings** — detected perches, power-policy toggles, and the real
   `<home>/settings.md`, editable in place.
 - **Expert** — the raw truth, verbatim: `agent.toml` editable in place
@@ -104,6 +109,7 @@ nest hatch doc-keeper "sync readme"   # run one bot, peeps stream live
 nest brood "update the docs"          # brood picks: routing → boss → fallback
 nest clutch boss "task one" "task two" # one bot, many tasks, in parallel
 nest roost                            # recent runs (receipts)
+nest find <words>                     # search receipts, sessions, agents, skills, memory
 nest imprint boss "first look"        # first verified run — 🐣 imprinted
 nest ask "prompt"                     # routed provider call (free-first failover)
 nest providers                        # declared backends + readiness

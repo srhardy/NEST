@@ -183,6 +183,12 @@
         <table class="runs"><thead><tr><th>run</th><th>bot</th><th>status</th><th>steps</th><th>secs</th><th></th></tr></thead><tbody id="runs"></tbody></table>
       </div>
     </div>
+    <div class="pane" id="pane-inbox">
+      <div class="scroll">
+        <h3 style="margin-bottom:12px">inbox — things that happened while you were away</h3>
+        <div id="inbox"></div>
+      </div>
+    </div>
     <div class="pane" id="pane-interview">
       <div class="scroll" style="display:flex;gap:24px">
         <div style="flex:1;display:flex;flex-direction:column;min-width:0">
@@ -319,9 +325,11 @@ function renderRoster() {
 
 function renderTabs() {
   const t = $('#tabs'); t.innerHTML = '';
+  const pending = (state.inbox || []).filter(i => !i.resolved).length;
   const tabs = [
     ['chat', state.chatBot ? `chat — ${state.chatBot}` : 'ask the nest', state.chatBot],
     ['activity', 'activity', null],
+    ['inbox', pending ? `📥 inbox (${pending})` : 'inbox', null],
   ];
   if (state.interviewing) tabs.push(['interview', '🥚 eggbot', 'eggbot']);
   tabs.push(['settings', 'settings', null]);
@@ -354,6 +362,7 @@ function switchPane(id) {
   $('#pane-' + id).classList.add('active');
   renderTabs();
   if (id === 'activity') loadRuns();
+  if (id === 'inbox') renderInbox();
   if (id === 'settings') loadSettings();
 }
 
@@ -489,7 +498,7 @@ async function refresh() {
   const s = await api('/api/state');
   state.agents = s.agents; state.perches = s.perches;
   state.duties = s.duties; state.providers = s.providers;
-  state.skills = s.skills;
+  state.skills = s.skills; state.inbox = s.inbox || [];
   renderRoster();
   const sb = $('#statusbar');
   const working = s.agents.filter(a => a.state === 'working').map(a => a.name);
@@ -513,6 +522,38 @@ async function featherRun(button) {
   if (r.error) { toast(`feather failed — ${r.error}`); button.disabled = false; return; }
   button.textContent = '✓';
   toast(`feathered — ${r.dir}`);
+}
+
+// the inbox — approval cards first: a gated run already went ahead with
+// its asks denied; "approve & re-run" launches the same task promoted
+function renderInbox() {
+  const items = state.inbox || [];
+  const box = $('#inbox');
+  if (!items.length) { box.innerHTML = '<p style="color:var(--dim)">nothing waiting — the nest is quiet.</p>'; return; }
+  box.innerHTML = '';
+  for (const item of items) {
+    const card = document.createElement('div');
+    card.style.cssText = `background:var(--card);border:1px solid var(--edge);border-radius:12px;padding:14px 16px;margin-bottom:10px;${item.resolved ? 'opacity:.5' : ''}`;
+    const when = new Date(item.created_ms).toLocaleString();
+    const buttons = item.resolved ? '<span style="color:var(--dim);font-size:11px">resolved</span>'
+      : item.kind === 'approval'
+        ? '<button class="pill" data-approve>approve & re-run</button><button class="pill" data-dismiss style="margin-left:8px">dismiss</button>'
+        : '<button class="pill" data-dismiss>dismiss</button>';
+    card.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center">
+        <strong>${esc(item.title)}</strong><span style="color:var(--dim);font-size:11px">${esc(when)}</span></div>
+      <div style="color:var(--dim);font-size:12px;margin:6px 0 10px;white-space:pre-wrap">${esc(item.body)}</div>
+      <div>${buttons}</div>`;
+    card.querySelector('[data-approve]')?.addEventListener('click', async () => {
+      const r = await api('/api/approvals/' + item.id, { action: 'approve' });
+      r.error ? toast(`approve failed — ${r.error}`) : toast(`approved — re-running as ${r.run}`);
+      await refresh(); renderInbox();
+    });
+    card.querySelector('[data-dismiss]')?.addEventListener('click', async () => {
+      await api('/api/approvals/' + item.id, { action: 'dismiss' });
+      await refresh(); renderInbox();
+    });
+    box.appendChild(card);
+  }
 }
 
 const getSetting = (content, key, dflt) => {

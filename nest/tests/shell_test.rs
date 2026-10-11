@@ -1207,3 +1207,250 @@ fn patrol_file_change_runs_a_routine() {
         thread::sleep(Duration::from_millis(500));
     }
 }
+
+/// An agent that asks before running bash — the approval-gate fixture.
+fn seed_gated_bot(home: &std::path::Path) {
+    std::fs::create_dir_all(home.join("agents")).unwrap();
+    std::fs::write(
+        home.join("agents/gated.md"),
+        "---\nname: gated\njob: gated work\npermissions:\n  bash: ask\n---\nI ask first.\n",
+    )
+    .unwrap();
+}
+
+fn inbox_items(port: u16) -> Vec<serde_json::Value> {
+    let raw = body(&http(port, "GET", "/api/inbox", None));
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    v["items"].as_array().unwrap().clone()
+}
+
+/// Wait for an inbox item matching `pred` (10s), returning its id.
+fn wait_inbox_item(port: u16, pred: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(item) = inbox_items(port).iter().find(|i| pred(i)) {
+            return item.clone();
+        }
+        assert!(Instant::now() < deadline, "inbox item never landed");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Hatching a bot with unapproved `ask` tools leaves a pending approval
+/// card; approving it resolves the card and re-runs the task promoted.
+#[test]
+fn approval_card_approve_re_runs() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    seed_gated_bot(&home);
+    let port = start(&home, t.path());
+
+    http(
+        port,
+        "POST",
+        "/api/hatch",
+        Some(r#"{"bot":"gated","task":"touch prod","perch":"echo"}"#),
+    );
+
+    let card = wait_inbox_item(port, |i| {
+        i["kind"] == "approval" && !i["resolved"].as_bool().unwrap()
+    });
+    assert!(
+        card["title"].as_str().unwrap().contains("bash"),
+        "card title should name the withheld tool: {}",
+        card["title"]
+    );
+    assert_eq!(card["approval"]["bot"], "gated");
+    let id = card["id"].as_str().unwrap().to_string();
+
+    // the badge number rides /api/state
+    let state = body(&http(port, "GET", "/api/state", None));
+    let state: serde_json::Value = serde_json::from_str(&state).unwrap();
+    assert!(state["inbox"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i["id"] == id));
+
+    // hostile ids never reach the filesystem; junk actions are rejected
+    for bad in ["..", "inbox-x%2Fy", "../roost/x"] {
+        let r = body(&http(
+            port,
+            "POST",
+            &format!("/api/approvals/{bad}"),
+            Some(r#"{"action":"dismiss"}"#),
+        ));
+        assert!(r.contains("invalid inbox id"), "{bad}: {r}");
+    }
+    let r = body(&http(
+        port,
+        "POST",
+        &format!("/api/approvals/{id}"),
+        Some(r#"{"action":"explode"}"#),
+    ));
+    assert!(r.contains("unknown action"), "{r}");
+
+    // approve → resolved + a re-run is spawned
+    let ok = body(&http(
+        port,
+        "POST",
+        &format!("/api/approvals/{id}"),
+        Some(r#"{"action":"approve"}"#),
+    ));
+    let ok: serde_json::Value = serde_json::from_str(&ok).unwrap();
+    assert!(ok["run"].as_str().is_some(), "{ok}");
+
+    // resolved items stay in history but refuse a second action
+    let again = body(&http(
+        port,
+        "POST",
+        &format!("/api/approvals/{id}"),
+        Some(r#"{"action":"approve"}"#),
+    ));
+    assert!(again.contains("already resolved"), "{again}");
+
+    // the re-run leaves a second 'touch prod' receipt in the roost
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let raw = body(&http(port, "GET", "/api/runs", None));
+        let runs: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let n = runs["receipts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["task"] == "touch prod")
+            .count();
+        if n >= 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "re-run never produced a receipt: {raw}"
+        );
+        thread::sleep(Duration::from_millis(150));
+    }
+}
+
+/// Dismiss resolves a card without re-running; notes dismiss the same way.
+#[test]
+fn approval_card_dismiss_resolves() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    seed_gated_bot(&home);
+    let port = start(&home, t.path());
+
+    http(
+        port,
+        "POST",
+        "/api/hatch",
+        Some(r#"{"bot":"gated","task":"touch prod","perch":"echo"}"#),
+    );
+    let card = wait_inbox_item(port, |i| i["kind"] == "approval");
+    let id = card["id"].as_str().unwrap();
+
+    let r = body(&http(
+        port,
+        "POST",
+        &format!("/api/approvals/{id}"),
+        Some(r#"{"action":"dismiss"}"#),
+    ));
+    assert!(r.contains("\"resolved\""), "{r}");
+
+    // dismissed = resolved in the listing, history preserved
+    let items = inbox_items(port);
+    let item = items.iter().find(|i| i["id"] == id).unwrap();
+    assert!(item["resolved"].as_bool().unwrap());
+
+    // and no re-run happened — only the original receipt
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let raw = body(&http(port, "GET", "/api/runs", None));
+        let runs: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let receipts = runs["receipts"].as_array().unwrap();
+        let n = receipts
+            .iter()
+            .filter(|r| r["task"] == "touch prod")
+            .count();
+        if n == 1 {
+            return; // original receipt landed, no second one coming
+        }
+        assert!(n == 0, "dismiss spawned a re-run: {raw}");
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(150));
+    }
+}
+
+/// A routine firing drops a note in the inbox — the triage queue for
+/// things that happened while you were away.
+#[test]
+fn routine_run_leaves_inbox_note() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("automations.toml"),
+        "[[automation]]\nname = \"nightly\"\nbot = \"doc-keeper\"\nevent = \"app:nightly\"\nprompt = \"sweep the docs\"\n",
+    )
+    .unwrap();
+    let port = start(&home, t.path());
+
+    let r = body(&http(port, "POST", "/api/duties/nightly/fire", None));
+    assert!(
+        r.contains("\"fired\":\"nightly\"") || r.contains("\"fired\": \"nightly\""),
+        "{r}"
+    );
+
+    let note = wait_inbox_item(port, |i| {
+        i["kind"] == "note" && i["title"].as_str().is_some_and(|t| t.contains("nightly"))
+    });
+    assert!(note["title"].as_str().unwrap().contains("done"), "{note}");
+}
+
+/// `nest find` over HTTP — one query hits receipts, agents, and files.
+#[test]
+fn find_returns_cross_type_hits() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let port = start(&home, t.path());
+
+    // a run whose task carries a unique needle → a receipt hit
+    http(
+        port,
+        "POST",
+        "/api/hatch",
+        Some(r#"{"bot":"doc-keeper","task":"document the zebra-cake","perch":"echo"}"#),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let raw = body(&http(port, "GET", "/api/find?q=zebra-cake", None));
+        let hits: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        if hits["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["kind"] == "receipt")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "receipt never found: {raw}");
+        thread::sleep(Duration::from_millis(150));
+    }
+
+    // agent files are searchable by name and body
+    let raw = body(&http(port, "GET", "/api/find?q=doc-keeper", None));
+    let hits: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(hits["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|h| h["kind"] == "agent" && h["id"] == "doc-keeper"));
+
+    // percent-encoded queries decode; a miss is an empty list, not an error
+    let raw = body(&http(port, "GET", "/api/find?q=keep%20docs", None));
+    let hits: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(!hits["results"].as_array().unwrap().is_empty());
+    let raw = body(&http(port, "GET", "/api/find?q=zzz-nothing", None));
+    let hits: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(hits["results"].as_array().unwrap().is_empty());
+}

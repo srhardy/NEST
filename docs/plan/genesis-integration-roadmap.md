@@ -94,17 +94,20 @@ next hatch's prompt contains it → `reflect` prunes a planted duplicate.
 
 ---
 
-## Phase 3 — Find everything + approvals polish
+## Phase 3 — Find everything + approvals polish — ✅ shipped
 
 | # | Change | Files | Notes |
 |---|--------|-------|-------|
-| 3.1 | **`nest find <q>`** — grep-level search over agents/skills/roost/memory/sessions, one result stream with type tags. `/api/find` for the shell's command-palette slot. | `find.rs` (new), `main.rs`, `shell.rs` | Cheap now (files), swappable to an index later. |
-| 3.2 | **Inbox.** Persisted `~/.nest/inbox/` items — approval requests, digest drops, routine results — the Superhuman triage queue for everything the nest did while you were away. | `shell.rs`, `web/` | Digest from 2.4 lands here. |
-| 3.3 | **Approval cards in UI** — pending gate renders as a card (bot, task, tools asked for, approve/deny buttons hitting `/api/approvals`). | `web/` | |
+| 3.1 | **`nest find <q>`** — capped scan over receipts, sessions, skills, agents, and memory, one scored stream (`id > title > body`, top 50) with kind tags. `GET /api/find?q=` serves the same to the shell; `+`/percent-escapes decode. | `find.rs` (new), `main.rs`, `shell.rs` | No index, no daemon — files are the truth, scan is cheap at this scale. Swappable to an index later behind the same fn. |
+| 3.2 | **Inbox.** `~/.nest/inbox/<id>.json` items — approvals + routine notes — unresolved-first ordering, ids path-checked (`id_ok`), atomic tmp→rename writes. `GET /api/inbox`, badge rides `/api/state`; routine runs drop a `note` item with the receipt's status and last tail line. | `inbox.rs` (new), `shell.rs` | Resolved items stay as history — a queue you can't lose things from. Digest drops arrive with Phase 2.4. |
+| 3.3 | **Approval cards** — a hatch/dispatch whose `ask` tools stay denied leaves an `approval` item carrying bot, task, and asks; `POST /api/approvals/<id>` `{action: approve}` re-runs promoted (hatch or chief/brood dispatch as appropriate), `dismiss` resolves. Inbox pane in the UI renders cards with both actions; resolved cards refuse a second action. | `shell.rs`, `web/index.html` | Items come from observed `Peep::Ask` events — only bots actually attempted generate cards, never untouched ladder candidates. |
 
-**Tests:** find over fixture home; inbox write/read; approval API round-trip.
-**Merge gate:** search returns cross-type hits; a routine run leaves an inbox
-item; an ask-permission bot produces an approval card.
+**Tests:** find over fixture home (cross-type hits, ranking, misses);
+inbox add/list/resolve, id safety, ordering; approval API round-trip
+(approve → re-run + receipt, dismiss → resolved, hostile ids, double-action,
+unknown action); routine fire → note; `/api/find` + `/api/inbox` e2e.
+**Merge gate:** met — 112 nest tests green; an ask-permission bot produces
+an approval card end-to-end; a routine run leaves an inbox item.
 
 ---
 

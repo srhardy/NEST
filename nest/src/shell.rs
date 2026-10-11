@@ -365,6 +365,26 @@ fn replace_file(source: &Path, destination: &Path) -> Result<()> {
     }
 }
 
+/// Tiny percent-decoder for query strings — the shell's only encoded
+/// surface is `/api/find?q=`, no need for a crate.
+fn urldecode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
+                out.push(hex);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn service_command(start: &str) -> std::process::Command {
     #[cfg(windows)]
     {
@@ -804,6 +824,7 @@ impl Shell {
             "providers": crate::forage::Router::from_dirs(&self.dirs).list(),
             "duties": patrol::describe(&self.duties),
             "skills": crate::feather::list_skills(&self.dirs),
+            "inbox": crate::inbox::list(&self.dirs),
             "onboarding": self.onboarding_needed(),
         })
     }
@@ -1035,8 +1056,20 @@ impl Shell {
             receipt: Mutex::new(None),
         });
         self.register_run(run.clone());
-        for tool in asks.iter().filter(|tool| !approved.contains(*tool)) {
+        let withheld: Vec<String> = asks
+            .iter()
+            .filter(|tool| !approved.contains(*tool))
+            .cloned()
+            .collect();
+        for tool in &withheld {
             run.emit_peep(&agent.name, &Peep::Ask { tool: tool.clone() });
+        }
+        if !withheld.is_empty() {
+            // the run went ahead denied — the inbox offers the re-run
+            // with the asks approved instead
+            let item =
+                crate::inbox::Item::approval(Some(agent.name.clone()), &task, withheld, false);
+            crate::inbox::add(&self.dirs, &item).ok();
         }
         let (run_id, cwd, roost_dir) = (run.id.clone(), self.cwd.clone(), self.dirs.roost());
         let (task, dirs) = (task.to_string(), self.dirs.clone());
@@ -1077,6 +1110,37 @@ impl Shell {
             run.finish(receipt);
         });
         Ok(run_id)
+    }
+
+    /// Routines are headless and unattended — their receipt lands in the
+    /// roost where nobody looks. A note in the inbox is how a routine
+    /// tells the user what it did while they were away.
+    fn inbox_after(&self, run_id: &str, duty_name: &str) {
+        let (runs, dirs) = (self.runs.clone(), self.dirs.clone());
+        let (run_id, name) = (run_id.to_string(), duty_name.to_string());
+        thread::spawn(move || {
+            for _ in 0..100 {
+                let receipt = runs
+                    .lock()
+                    .unwrap()
+                    .get(&run_id)
+                    .and_then(|r| r.receipt.lock().unwrap().clone());
+                if let Some(r) = receipt {
+                    let status = serde_json::to_value(&r.status)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_else(|| format!("{:?}", r.status));
+                    let tail = r.tail.last().cloned().unwrap_or_default();
+                    let item = crate::inbox::Item::note(
+                        &format!("routine '{name}' — {status}"),
+                        &format!("{tail}\nrun: {}", r.id),
+                    );
+                    crate::inbox::add(&dirs, &item).ok();
+                    return;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
     }
 
     /// Poll one run's receipt (up to ~10s) then run the auto-feather
@@ -1458,6 +1522,10 @@ impl Shell {
             } else {
                 brood.plan(&task)
             };
+            // asks actually withheld during the dispatch → one inbox item
+            // offering the same dispatch with them allowed
+            let withheld = Arc::new(Mutex::new(BTreeSet::new()));
+            let withheld2 = withheld.clone();
             let run2 = run.clone();
             match brood.dispatch_full(
                 &task,
@@ -1466,9 +1534,25 @@ impl Shell {
                 &cwd,
                 &dirs,
                 &approved,
-                move |bot, peep| run2.emit_peep(bot, peep),
+                move |bot, peep| {
+                    if let Peep::Ask { tool } = peep {
+                        withheld2.lock().unwrap().insert(tool.clone());
+                    }
+                    run2.emit_peep(bot, peep)
+                },
             ) {
                 Ok(dispatch) => {
+                    let withheld = withheld.lock().unwrap();
+                    if !withheld.is_empty() {
+                        let item = crate::inbox::Item::approval(
+                            None,
+                            &task,
+                            withheld.iter().cloned().collect(),
+                            chief,
+                        );
+                        crate::inbox::add(&dirs, &item).ok();
+                    }
+                    drop(withheld);
                     Self::finish_dispatch(&run, dispatch, &roost_dir, perch.as_ref(), &task)
                 }
                 Err(e) => {
@@ -1625,6 +1709,7 @@ fn spawn_watchers(shell: &Arc<Shell>) {
         thread::spawn(move || {
             patrol::run(&shell.duties, |d| {
                 if let Some(id) = shell.fire_duty(d) {
+                    shell.inbox_after(&id, &d.spec.name);
                     shell.auto_feather_after(&id);
                 }
             });
@@ -1929,6 +2014,71 @@ fn route<'a>(
         (&Method::Get, "/birdy") => respond(BIRDY.to_string(), "text/html; charset=utf-8", 200),
         (&Method::Get, "/api/state") => json_response(shell.state_json()),
         (&Method::Get, "/api/runs") => json_response(shell.runs_json()),
+        (&Method::Get, "/api/inbox") => {
+            json_response(json!({"items": crate::inbox::list(&shell.dirs)}))
+        }
+        (&Method::Get, "/api/find") => {
+            // `?q=` — universal search over every file the nest writes
+            // (the router strips the query, so read it off the raw url)
+            let q = request
+                .url()
+                .split('?')
+                .nth(1)
+                .and_then(|qs| {
+                    qs.split('&')
+                        .find_map(|kv| kv.strip_prefix("q=").map(str::to_string))
+                })
+                .map(|s| s.replace('+', " "))
+                .unwrap_or_default();
+            let q = urldecode(&q);
+            json_response(json!({"results": crate::find::find(&shell.dirs, &q)}))
+        }
+        // the approval queue — approve re-runs the gated task with its
+        // asks promoted; dismiss just resolves the item
+        (&Method::Post, p) if p.starts_with("/api/approvals/") => {
+            let id = &p["/api/approvals/".len()..];
+            let body = read_body(request);
+            let v: Value = serde_json::from_str(&body).unwrap_or_default();
+            let action = v["action"].as_str().unwrap_or_default();
+            let result = (|| -> Result<Value> {
+                anyhow::ensure!(crate::inbox::id_ok(id), "invalid inbox id");
+                let item = crate::inbox::get(&shell.dirs, id)?;
+                anyhow::ensure!(!item.resolved, "item already resolved");
+                match action {
+                    "dismiss" => {
+                        crate::inbox::resolve(&shell.dirs, id)?;
+                        Ok(json!({"resolved": id}))
+                    }
+                    "approve" => {
+                        let approval = item
+                            .approval
+                            .clone()
+                            .context("inbox item is not an approval")?;
+                        let approved: BTreeSet<String> = approval.asks.iter().cloned().collect();
+                        let run = match &approval.bot {
+                            Some(bot) => {
+                                shell.start_hatch(bot, &approval.task, None, None, approved)
+                            }
+                            None => shell.start_dispatch(
+                                &approval.task,
+                                Vec::new(),
+                                None,
+                                approved,
+                                approval.chief,
+                            ),
+                        }?;
+                        crate::inbox::resolve(&shell.dirs, id)?;
+                        shell.auto_feather_after(&run);
+                        Ok(json!({"resolved": id, "run": run}))
+                    }
+                    other => anyhow::bail!("unknown action '{other}'"),
+                }
+            })();
+            match result {
+                Ok(value) => json_response(value),
+                Err(error) => json_response(json!({"error": format!("{error:#}")})),
+            }
+        }
         (&Method::Get, "/api/settings") => {
             let path = shell.dirs.home.join("settings.md");
             let content = std::fs::read_to_string(&path).unwrap_or_default();
@@ -2372,6 +2522,7 @@ fn route<'a>(
                     d.stamp(patrol::now());
                     let run = shell.fire_duty(d);
                     if let Some(id) = &run {
+                        shell.inbox_after(id, &d.spec.name);
                         shell.auto_feather_after(id);
                     }
                     json_response(json!({"fired": name, "run": run}))

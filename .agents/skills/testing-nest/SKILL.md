@@ -22,7 +22,14 @@ description: How to run and end-to-end test the NEST engine + web shell and the 
 - `roost/<receipt-id>.json` — every run writes one, including failures; `failure_kind` says why (spawn/exit/budget/denied).
 - `roost/<receipt-id>.peeps.jsonl` — the run's full event tape (one JSON per line, `ms` stamped); the receipt is just its summary.
 - `skills/<name>/SKILL.md` — feather output; frontmatter `name:`, `authored-by:`, `run:`.
+- `inbox/<id>.json` — the triage queue. `kind: "approval"` (a run went ahead with its `ask`-permissioned tools denied; `approval{bot,task,asks,chief}` carries the re-run) or `"note"` (routine results). Unresolved sort first; resolved items stay as history.
 - No credentials needed anywhere: with no `providers.toml`, the forage router falls back to the echo provider (distill output = the prompt reflected back).
+
+## Inbox & approvals & find
+- `GET /api/inbox` → `{"items":[...]}`; the list also rides `GET /api/state` as `inbox` (the UI badge). Items persist under `<home>/inbox/`.
+- Approval cards: a bot with `permissions: {bash: ask}` hatched without `approved_tools` leaves a pending `approval` item (one item per dispatch — only bots actually attempted contribute asks). `POST /api/approvals/<id> {"action":"approve"}` re-runs promoted and returns `{"run":"run-N"}`; `{"action":"dismiss"}` just resolves. Resolved items refuse a second action (`already resolved`); ids that fail `id_ok` (`..`, `/`, `%`, `\`) → `invalid inbox id`.
+- A routine firing (`POST /api/duties/<name>/fire` or a real trigger) drops a `note` item once its receipt lands — poll `/api/inbox` ~10s.
+- `GET /api/find?q=<words>` / `nest find <words>` — one scored stream (`id` > `title` > `body`, top 50, `kind` = receipt|session|skill|agent|memory) over every file the nest writes. NOTE: the HTTP router strips `?query` before matching — handlers read `request.url()` for params (same pattern as `/api/sessions?bot=`).
 
 ## Webhook daemon (`nest daemon --webhook <addr>`)
 - One process runs BOTH the remotes watcher (~3s tick) and the HTTP listener; start it from a writable cwd (e.g. `/tmp/nest-cwd`) with `nohup` and check the log for `webhook on <addr>`.
