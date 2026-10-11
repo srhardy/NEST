@@ -1510,3 +1510,54 @@ fn memory_endpoints_edit_and_reflect() {
     assert!(r["digest"].as_str().is_some(), "{r}");
     assert_eq!(r["facts_kept"], 1);
 }
+
+#[test]
+fn expert_write_rejects_hostile_input() {
+    let t = tempfile::tempdir().unwrap();
+    let port = start(&t.path().join("home"), t.path());
+    let agent_toml = t.path().join("agent.toml");
+
+    // a path that isn't agent.toml — traversal, absolute, sibling file
+    for evil in [
+        "../../etc/passwd",
+        "/tmp/evil.toml",
+        "agent.toml.bak",
+        "../agent.toml",
+    ] {
+        let req = format!(r#"{{"path":{:?},"content":"x = 1"}}"#, evil.to_string());
+        let r = body(&http(port, "POST", "/api/expert", Some(&req)));
+        assert!(r.contains("error"), "path {evil} should fail: {r}");
+    }
+    assert!(!t.path().join("evil.toml").exists());
+
+    // toml that doesn't parse
+    let req = format!(
+        r#"{{"path":{:?},"content":"not [valid toml"}}"#,
+        agent_toml.display().to_string()
+    );
+    let r = body(&http(port, "POST", "/api/expert", Some(&req)));
+    assert!(r.contains("does not parse"), "{r}");
+
+    // toml that parses but fails manifest validation — a bot named ".."
+    // is not a legal filename and must never be written out
+    let bad_manifest = "version = 1\n[[bots]]\nname = \"..\"\njob = \"x\"\n";
+    let req = format!(
+        r#"{{"path":{:?},"content":{:?}}}"#,
+        agent_toml.display().to_string(),
+        bad_manifest
+    );
+    let r = body(&http(port, "POST", "/api/expert", Some(&req)));
+    assert!(r.contains("invalid"), "{r}");
+    assert!(!agent_toml.exists(), "invalid manifest must not be saved");
+
+    // a valid manifest saves
+    let good = "version = 1\n[[bots]]\nname = \"writer\"\njob = \"write things\"\n";
+    let req = format!(
+        r#"{{"path":{:?},"content":{:?}}}"#,
+        agent_toml.display().to_string(),
+        good
+    );
+    let r = body(&http(port, "POST", "/api/expert", Some(&req)));
+    assert!(r.contains("saved"), "{r}");
+    assert_eq!(std::fs::read_to_string(&agent_toml).unwrap(), good);
+}

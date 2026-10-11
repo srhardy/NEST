@@ -109,6 +109,7 @@ nest agents                           # the roster
 nest hatch doc-keeper "sync readme"   # run one bot, peeps stream live
 nest brood "update the docs"          # brood picks: routing → boss → fallback
 nest clutch boss "task one" "task two" # one bot, many tasks, in parallel
+nest pipe "researcher|writer|reviewer" "the task"  # bot chain — each stage feeds the next
 nest roost                            # recent runs (receipts)
 nest find <words>                     # search receipts, sessions, agents, skills, memory
 nest memory                           # the learned facts + your profile

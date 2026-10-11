@@ -165,8 +165,9 @@ pub fn hatch(
 
 /// Stop a runaway hatchling. On unix the child leads its own process
 /// group (see `hatch`) — kill the whole group so grandchildren can't
-/// hold the output pipes open and stall the drain. Windows kills the
-/// direct child only (job-object tree kill is a follow-up).
+/// hold the output pipes open and stall the drain. Windows gets the
+/// same guarantee from `taskkill /T` — the tree goes, not just the
+/// direct child.
 #[cfg(unix)]
 fn kill_tree(child: &mut Child) {
     unsafe {
@@ -178,7 +179,40 @@ fn kill_tree(child: &mut Child) {
 
 #[cfg(not(unix))]
 fn kill_tree(child: &mut Child) {
+    let pid = child.id().to_string();
+    let _ = std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
     child.kill().ok();
+}
+
+/// Policies the bot declared but the perch can't enforce — prompt text
+/// at best. One tape line each so the receipt shows what was advisory.
+fn advisories(agent: &AgentSpec, perch: &dyn Perch) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !agent.permissions.is_empty() && !perch.enforces_tools() {
+        notes.push(format!(
+            "⚠ tool policy is advisory on perch '{}' — declared in the prompt, not enforced",
+            perch.name()
+        ));
+    }
+    if let Some(egress) = agent.egress.as_deref() {
+        if !perch.enforces_egress() {
+            notes.push(format!(
+                "⚠ egress '{egress}' is advisory on perch '{}' — the harness is asked, not prevented",
+                perch.name()
+            ));
+        }
+    }
+    if agent.budget.is_some() && !perch.enforces_budget() {
+        notes.push(format!(
+            "⚠ spend budget is advisory on perch '{}' — max_steps/max_seconds still hard-cap the run",
+            perch.name()
+        ));
+    }
+    notes
 }
 
 /// How long the peep drain waits for readers to notice a dead child
@@ -226,6 +260,12 @@ pub fn wait(
     };
     emit(&Peep::Spawned { pid });
 
+    // honesty on the tape: a declared policy the perch can't enforce is
+    // advisory — say so once, visibly, instead of pretending
+    for note in advisories(agent, perch) {
+        emit(&Peep::Output { text: note });
+    }
+
     let max_seconds = agent.max_seconds.unwrap_or(DEFAULT_MAX_SECONDS);
     let deadline = Instant::now() + Duration::from_secs(max_seconds);
 
@@ -233,7 +273,7 @@ pub fn wait(
     let stderr = child.stderr.take();
     let (tx, rx) = channel::<Peep>();
 
-    let (steps, tail, session, killed) = thread::scope(|scope| {
+    let (steps, mut tail, session, killed, structured_seen) = thread::scope(|scope| {
         let streams: Vec<Box<dyn std::io::Read + Send>> = [
             stdout.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
             stderr.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
@@ -259,6 +299,9 @@ pub fn wait(
         let mut tail: Vec<String> = Vec::new();
         // the harness's resume token, if it announces one mid-run
         let mut session: Option<String> = None;
+        // did the perch emit any structured event? a JSON perch that
+        // only ever produces Output means the upstream format drifted
+        let mut structured_seen = false;
         // Some(kind) once a budget has killed the child — the loop then
         // just drains whatever the readers still have to say.
         let mut killed: Option<FailureKind> = None;
@@ -287,6 +330,7 @@ pub fn wait(
             match &peep {
                 Peep::Step { label, .. } => {
                     steps += 1;
+                    structured_seen = true;
                     emit(&Peep::Step {
                         n: steps,
                         label: label.clone(),
@@ -301,6 +345,7 @@ pub fn wait(
                 }
                 Peep::Session { id } => {
                     session = Some(id.clone());
+                    structured_seen = true;
                     emit(&peep);
                 }
                 _ => emit(&peep),
@@ -315,8 +360,19 @@ pub fn wait(
                 }
             }
         }
-        (steps, tail, session, killed)
+        (steps, tail, session, killed, structured_seen)
     });
+
+    // a structured perch that produced only plain output lines — its
+    // CLI's format drifted; say so on the tape instead of failing silent
+    if perch.structured_output() && !structured_seen && !tail.is_empty() {
+        let note = format!(
+            "⚠ perch '{}' emitted no structured events — its output format may have changed; steps/session tracking degraded",
+            perch.name()
+        );
+        tail.push(note.clone());
+        emit(&Peep::Output { text: note });
+    }
 
     let exit = child.wait().ok();
     let code = exit.and_then(|s| s.code());

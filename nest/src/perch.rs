@@ -82,6 +82,28 @@ pub trait Perch: Send + Sync {
     fn install_cmd(&self) -> Option<&'static str> {
         None
     }
+    /// Can this perch hand the tool policy to the harness as a real
+    /// control (allow/deny flags, permission env) rather than prompt
+    /// text? Stubs return false — their policy is advisory only.
+    fn enforces_tools(&self) -> bool {
+        false
+    }
+    /// Real egress control. No perch has one today — declared `egress`
+    /// is prompt text everywhere, and the run says so on the tape.
+    fn enforces_egress(&self) -> bool {
+        false
+    }
+    /// Real spend-budget control (`budget:` is money, distinct from the
+    /// engine's step/second rails). Advisory on every perch today.
+    fn enforces_budget(&self) -> bool {
+        false
+    }
+    /// Does this perch parse structured events (stream-json / JSONL)?
+    /// A structured perch emitting only plain lines means the upstream
+    /// CLI changed its output format — worth a warning, not silence.
+    fn structured_output(&self) -> bool {
+        false
+    }
 }
 
 /// PATH lookup honoring PATHEXT on Windows — the shared "is this
@@ -275,6 +297,12 @@ impl Perch for ClaudeCode {
     fn install_cmd(&self) -> Option<&'static str> {
         Some("npm i -g @anthropic-ai/claude-code")
     }
+    fn enforces_tools(&self) -> bool {
+        true
+    }
+    fn structured_output(&self) -> bool {
+        true
+    }
 }
 
 /// `codex` (Codex CLI): `codex exec --json <prompt>` — JSONL turn events.
@@ -358,6 +386,12 @@ impl Perch for Codex {
     fn install_cmd(&self) -> Option<&'static str> {
         Some("npm i -g @openai/codex")
     }
+    fn enforces_tools(&self) -> bool {
+        true
+    }
+    fn structured_output(&self) -> bool {
+        true
+    }
 }
 
 /// `opencode` (OpenCode CLI): `opencode run <prompt>` — plain lines out.
@@ -416,6 +450,9 @@ impl Perch for OpenCode {
     }
     fn install_cmd(&self) -> Option<&'static str> {
         Some("npm i -g opencode-ai")
+    }
+    fn enforces_tools(&self) -> bool {
+        true
     }
 }
 
@@ -492,6 +529,12 @@ impl Perch for Pi {
     }
     fn install_cmd(&self) -> Option<&'static str> {
         Some("npm install -g --ignore-scripts @earendil-works/pi-coding-agent")
+    }
+    fn enforces_tools(&self) -> bool {
+        true
+    }
+    fn structured_output(&self) -> bool {
+        true
     }
 }
 

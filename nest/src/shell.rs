@@ -1871,6 +1871,20 @@ fn webhook_route<'a>(
     let dir = shell.dirs.home.join("remotes").join(remote);
     let token = std::fs::read_to_string(dir.join("token")).unwrap_or_default();
     let token = token.trim();
+    // the token is bearer auth — a world-readable one is as good as
+    // none; warn loudly rather than refuse (it's still the user's file)
+    #[cfg(unix)]
+    if !token.is_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join("token"))
+            .map(|m| m.permissions().mode())
+            .unwrap_or(0);
+        if mode & 0o077 != 0 {
+            eprintln!(
+                "⚠ {remote}: token is group/world-readable (mode {mode:04o}) — tighten with `chmod 600`"
+            );
+        }
+    }
     let bearer = request
         .headers()
         .iter()

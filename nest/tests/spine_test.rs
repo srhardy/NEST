@@ -491,3 +491,83 @@ fn perch_lookup_by_name() {
     assert!(perch_named("fail").is_some());
     assert!(perch_named("nonexistent").is_none());
 }
+
+#[test]
+fn advisory_policy_lands_on_the_tape() {
+    // a bot that declares policies a stub perch can't enforce — the run
+    // must say "advisory" on the tape instead of pretending enforcement
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path();
+    let dirs = NestDirs::resolve(cwd, Some(cwd.to_path_buf()));
+    let mut agent = spec_with("guarded", None);
+    agent
+        .permissions
+        .insert("bash".into(), spoke_core::manifest::ToolPolicy::Allow);
+    agent.egress = Some("none".into());
+    agent.budget = Some("balanced".into());
+    let perch = Echo;
+    let mut h = hatchling::hatch(&agent, "work", &perch, cwd, &dirs, None).unwrap();
+    let receipt = hatchling::wait(&mut h, "work", &perch, &agent, cwd, &dirs, |_| {});
+    assert_eq!(receipt.status, Status::Done);
+    // the advisories land on the peep tape — the bounded tail may push
+    // them out when the perch floods output (echo prints the whole prompt)
+    let tape = fs::read_to_string(receipt.peeps_path.expect("peep tape")).unwrap();
+    for needle in [
+        "tool policy is advisory",
+        "egress 'none' is advisory",
+        "spend budget is advisory",
+    ] {
+        assert!(tape.contains(needle), "missing '{needle}' on tape: {tape}");
+    }
+}
+
+/// A structured perch whose CLI stopped emitting events — every line
+/// parses as plain Output. The tape must flag the suspected drift.
+struct Drifted;
+impl Perch for Drifted {
+    fn name(&self) -> &'static str {
+        "drifted"
+    }
+    fn binary(&self) -> &'static str {
+        ""
+    }
+    fn launch(
+        &self,
+        _a: &AgentSpec,
+        _t: &str,
+        _d: &NestDirs,
+        _s: Option<&str>,
+    ) -> nest::perch::Launch {
+        nest::perch::Launch {
+            program: "sh".into(),
+            args: vec!["-c".into(), "echo one; echo two".into()],
+            env: BTreeMap::new(),
+        }
+    }
+    fn parse(&self, line: &str) -> Option<Peep> {
+        Some(Peep::Output { text: line.into() })
+    }
+    fn structured_output(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn structured_perch_silence_warns_of_format_drift() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path();
+    let dirs = NestDirs::resolve(cwd, Some(cwd.to_path_buf()));
+    let agent = spec_with("watched", None);
+    let perch = Drifted;
+    let mut h = hatchling::hatch(&agent, "go", &perch, cwd, &dirs, None).unwrap();
+    let receipt = hatchling::wait(&mut h, "go", &perch, &agent, cwd, &dirs, |_| {});
+    assert_eq!(receipt.status, Status::Done);
+    assert!(
+        receipt
+            .tail
+            .iter()
+            .any(|l| l.contains("no structured events")),
+        "missing drift warning: {:?}",
+        receipt.tail
+    );
+}

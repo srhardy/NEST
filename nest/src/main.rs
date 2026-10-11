@@ -82,6 +82,14 @@ enum Cmd {
         /// The query, in words.
         query: Vec<String>,
     },
+    /// Run the task through a chain of bots — each stage's output feeds
+    /// the next as context (`researcher|writer|reviewer` as one command).
+    Pipe {
+        /// Bot names separated by `|` or `,`.
+        bots: String,
+        /// The initial task.
+        task: String,
+    },
     /// Show the memory: profile and learned facts, personal then project.
     Memory,
     /// Digest the roost into memory/daily/ and prune stale facts
@@ -411,6 +419,38 @@ fn main() -> Result<()> {
                 if !hit.snippet.is_empty() {
                     println!("          {}", hit.snippet);
                 }
+            }
+        }
+        Cmd::Pipe { bots, task } => {
+            let (dirs, cwd) = resolve(&cli)?;
+            let agents = load_roster(&dirs)?;
+            let names: Vec<&str> = bots
+                .split(['|', ','])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            if names.len() < 2 {
+                bail!("pipe needs at least two bots — `nest pipe \"researcher|writer|reviewer\" \"task\"`");
+            }
+            let mut context = String::new();
+            for (i, name) in names.iter().enumerate() {
+                let agent = find_agent(&agents, name)?;
+                let stage_task = if context.is_empty() {
+                    task.clone()
+                } else {
+                    format!(
+                        "{task}\n\n## Pipeline context — output from earlier stages\n\n{context}"
+                    )
+                };
+                println!("—— stage {}: {name} ——", i + 1);
+                let receipt = run_bot(agent, &stage_task, &cli, &dirs, &cwd)?;
+                if receipt.status != hatchling::Status::Done {
+                    bail!(
+                        "stage '{name}' {:?} — the pipeline stops here",
+                        receipt.status
+                    );
+                }
+                context.push_str(&format!("\n### {name}\n\n{}\n", receipt.tail.join("\n")));
             }
         }
         Cmd::Memory => {
