@@ -62,7 +62,9 @@ impl Forage for CommandForage {
         &self.name
     }
     fn complete(&self, req: &ForageRequest) -> Result<ForageResponse> {
-        let mut child = Command::new(&self.program)
+        let (program, lead_args) = crate::perch::resolve_program(&self.program);
+        let mut child = Command::new(&program)
+            .args(&lead_args)
             .args(&self.args)
             .envs(&self.env)
             .stdin(Stdio::piped())

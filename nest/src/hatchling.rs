@@ -136,8 +136,10 @@ pub fn hatch(
     session: Option<&str>,
 ) -> Result<Hatchling> {
     let launch = perch.launch(agent, task, dirs, session);
-    let mut cmd = Command::new(&launch.program);
-    cmd.args(&launch.args)
+    let (program, lead_args) = crate::perch::resolve_program(&launch.program);
+    let mut cmd = Command::new(&program);
+    cmd.args(&lead_args)
+        .args(&launch.args)
         .envs(&launch.env)
         .current_dir(cwd)
         .stdin(Stdio::null())

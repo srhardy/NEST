@@ -7,6 +7,16 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+/// The user's home directory: `$HOME`, else `%USERPROFILE%` (Windows sets
+/// only the latter). Empty values count as unset.
+pub fn user_home() -> Option<PathBuf> {
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .filter_map(|k| env::var_os(k))
+        .find(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
 /// The `.nest/` roots the engine reads.
 #[derive(Debug, Clone)]
 pub struct NestDirs {
@@ -22,7 +32,7 @@ impl NestDirs {
     pub fn resolve(cwd: &Path, home: Option<PathBuf>) -> Self {
         let home = home
             .or_else(|| env::var_os("NEST_HOME").map(PathBuf::from))
-            .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".nest")))
+            .or_else(|| user_home().map(|h| h.join(".nest")))
             .unwrap_or_else(|| PathBuf::from(".nest"));
         let project = cwd.join(".nest").is_dir().then(|| cwd.join(".nest"));
         Self { project, home }

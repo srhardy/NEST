@@ -135,6 +135,84 @@ fn candidates(dir: &std::path::Path, bin: &str) -> Vec<PathBuf> {
     }
 }
 
+/// Turn a bare program name into something `Command` can actually spawn.
+/// Windows `CreateProcess` only appends `.exe`, so npm-installed CLIs
+/// (`claude.cmd`, `codex.cmd`) are detected by `which` yet "not found" at
+/// spawn. Resolve through PATH/PATHEXT, and unwrap npm shims to their real
+/// target: Rust refuses multi-line args to batch files, and prompts are
+/// multi-line. Returns the program plus any args that must precede the
+/// caller's (a `node` shim's script path). Non-Windows is a passthrough.
+pub fn resolve_program(program: &str) -> (String, Vec<String>) {
+    if !cfg!(windows) {
+        return (program.to_string(), Vec::new());
+    }
+    let Some(path) = which(program) else {
+        return (program.to_string(), Vec::new());
+    };
+    let is_batch = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+    if is_batch {
+        if let Some(dir) = path.parent() {
+            if let Some(target) = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| parse_npm_shim(&text, dir))
+            {
+                return match target {
+                    ShimTarget::Exe(exe) => (exe.to_string_lossy().into_owned(), Vec::new()),
+                    ShimTarget::Script(script) => {
+                        let node = which("node")
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "node".into());
+                        (node, vec![script.to_string_lossy().into_owned()])
+                    }
+                };
+            }
+        }
+    }
+    (path.to_string_lossy().into_owned(), Vec::new())
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ShimTarget {
+    Exe(PathBuf),
+    Script(PathBuf),
+}
+
+/// Find the real target an npm `.cmd` shim launches: the last quoted
+/// `%dp0%\…` path ending in `.exe` (a native binary) or `.js/.cjs/.mjs`
+/// (run under node). `node.exe` itself is the interpreter, never the target.
+pub fn parse_npm_shim(text: &str, shim_dir: &std::path::Path) -> Option<ShimTarget> {
+    let mut found = None;
+    for token in text.split('"') {
+        let Some(rest) = token.strip_prefix("%dp0%") else {
+            continue;
+        };
+        let rest = rest.trim_start_matches(['\\', '/']);
+        if rest.is_empty() {
+            continue;
+        }
+        let path = rest
+            .split(['\\', '/'])
+            .fold(shim_dir.to_path_buf(), |acc, part| acc.join(part));
+        let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+        if name == "node.exe" {
+            continue;
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext.eq_ignore_ascii_case("exe") {
+            found = Some(ShimTarget::Exe(path));
+        } else if ["js", "cjs", "mjs"]
+            .iter()
+            .any(|e| ext.eq_ignore_ascii_case(e))
+        {
+            found = Some(ShimTarget::Script(path));
+        }
+    }
+    found
+}
+
 #[cfg(unix)]
 fn is_executable(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -676,6 +754,40 @@ pub fn detected_perches() -> Vec<PerchInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn npm_shim_with_native_exe_resolves_to_the_exe() {
+        let shim = "@ECHO off\r\nSETLOCAL\r\nCALL :find_dp0\r\n\"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe\"   %*\r\n";
+        let dir = std::path::Path::new("npm");
+        let want = dir
+            .join("node_modules")
+            .join("@anthropic-ai")
+            .join("claude-code")
+            .join("bin")
+            .join("claude.exe");
+        assert_eq!(parse_npm_shim(shim, dir), Some(ShimTarget::Exe(want)));
+    }
+
+    #[test]
+    fn npm_shim_with_node_script_resolves_to_the_script_not_node() {
+        let shim = "IF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n)\r\nendLocal & goto #_undefined_# 2>NUL || title %COMMAND_LINE% & \"%_prog%\"  \"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\" %*\r\n";
+        let dir = std::path::Path::new("npm");
+        let want = dir
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("bin")
+            .join("codex.js");
+        assert_eq!(parse_npm_shim(shim, dir), Some(ShimTarget::Script(want)));
+    }
+
+    #[test]
+    fn unrecognised_shim_has_no_target() {
+        assert_eq!(
+            parse_npm_shim("@echo off\r\necho hi\r\n", std::path::Path::new("x")),
+            None
+        );
+    }
 
     fn spec(perms: &[(&str, ToolPolicy)]) -> AgentSpec {
         AgentSpec {

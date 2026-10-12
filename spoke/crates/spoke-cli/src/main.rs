@@ -16,7 +16,7 @@ use spoke_registry::Store;
 #[derive(Parser)]
 #[command(name = "spoke", version, about = "One hub for every coding agent")]
 struct Cli {
-    /// Home directory to operate on (defaults to $HOME)
+    /// Home directory to operate on (defaults to $HOME, else %USERPROFILE%)
     #[arg(long, global = true)]
     home: Option<PathBuf>,
     /// Project directory (defaults to the current directory)
@@ -132,7 +132,10 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<()> {
     let home = cli.home.unwrap_or_else(|| {
-        std::env::var_os("HOME")
+        ["HOME", "USERPROFILE"]
+            .iter()
+            .filter_map(|k| std::env::var_os(k))
+            .find(|v| !v.is_empty())
             .map(PathBuf::from)
             .unwrap_or_default()
     });
