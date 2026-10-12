@@ -391,6 +391,12 @@ pub fn wait(
             _ => (Status::Failed, Some(perch.failure_kind(&tail))),
         },
     };
+    if status == Status::Failed {
+        if let Some(hint) = crate::perch::auth_hint(&hatchling.perch, &tail) {
+            tail.push(hint.clone());
+            emit(&Peep::Output { text: hint });
+        }
+    }
     match status {
         Status::Done => emit(&Peep::Done { code: 0 }),
         Status::Failed => emit(&Peep::Failed {

@@ -135,6 +135,34 @@ fn candidates(dir: &std::path::Path, bin: &str) -> Vec<PathBuf> {
     }
 }
 
+/// When a failed run's output says the harness isn't signed in, the one
+/// line that tells a newcomer how to fix it. NEST wraps CLIs that keep
+/// their own login, so the remedy lives in that CLI, not in NEST.
+pub fn auth_hint(perch: &str, tail: &[String]) -> Option<String> {
+    const MARKERS: [&str; 6] = [
+        "not logged in",
+        "please run /login",
+        "invalid api key",
+        "authentication_error",
+        "unauthorized",
+        "not authenticated",
+    ];
+    let signed_out = tail.iter().any(|line| {
+        let line = line.to_lowercase();
+        MARKERS.iter().any(|m| line.contains(m))
+    });
+    if !signed_out {
+        return None;
+    }
+    let fix = match perch {
+        "claude-code" => "run `claude`, then /login (or set ANTHROPIC_API_KEY)",
+        "codex" => "run `codex login` (or set OPENAI_API_KEY)",
+        "opencode" => "run `opencode auth login`",
+        _ => "sign in to that CLI directly, then retry",
+    };
+    Some(format!("⚠ {perch} is not signed in — {fix}"))
+}
+
 /// Turn a bare program name into something `Command` can actually spawn.
 /// Windows `CreateProcess` only appends `.exe`, so npm-installed CLIs
 /// (`claude.cmd`, `codex.cmd`) are detected by `which` yet "not found" at
@@ -779,6 +807,17 @@ mod tests {
             .join("bin")
             .join("codex.js");
         assert_eq!(parse_npm_shim(shim, dir), Some(ShimTarget::Script(want)));
+    }
+
+    #[test]
+    fn signed_out_output_gets_a_per_perch_hint() {
+        let tail = vec!["Not logged in · Please run /login".to_string()];
+        let hint = auth_hint("claude-code", &tail).unwrap();
+        assert!(hint.contains("claude") && hint.contains("/login"), "{hint}");
+        assert!(auth_hint("codex", &tail).unwrap().contains("codex login"));
+        assert!(auth_hint("pi", &tail).is_some());
+        assert_eq!(auth_hint("claude-code", &["all good".to_string()]), None);
+        assert_eq!(auth_hint("claude-code", &[]), None);
     }
 
     #[test]
